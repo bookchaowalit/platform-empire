@@ -44,8 +44,8 @@ with the `recurring-gen` automation token: it lists tasks, then
 idempotent (unique parent and occurrence), so re-runs create nothing twice.
 Zero recurring tasks is a successful no-op; one failing parent is logged and
 skipped (exit 1 at the end). Variables (Railway only): `EMPIRE_SERVICE=recurring`,
-`EMPIRE_TASKS_API_URL`, `RECURRING_GEN_TOKEN`. Deploy:
-`railway up --ci --service recurring-gen`; check:
+`EMPIRE_TASKS_API_URL`, `RECURRING_GEN_TOKEN`. Deploy: a merge to `main` (CD, see
+[Token rotation](#token-rotation)); check:
 `railway run --service recurring-gen -- empire-recurring --dry-run`.
 
 Railway variables for `tasks-api`, `tasks-publisher` and `recurring-gen` also include
@@ -105,8 +105,8 @@ Automation tokens live 30 days. `empire-token-rotate` re-provisions the automati
 whose token (local or deployed) expires within `rotate_within_days`, then pushes the
 new tokens to every target in `contracts/automations/v1/deployments.json` (Railway
 service variables, Vercel production env + one production deploy). Values move on
-stdin only; output is JSON lines without secrets. It runs weekly from the owner's
-crontab (Monday 02:30 Asia/Bangkok) next to the platform monitor:
+stdin only; output is JSON lines without secrets. The weekly run is hosted (the
+`token-rotate` cron below); this CLI is the manual fallback from a workstation:
 
 ```bash
 EMPIRE_DB_MODE=hosted .venv/bin/empire-token-rotate --workspace owner \
@@ -122,5 +122,6 @@ Hosted run: the `token-rotate` Railway cron service (`empire-token-rotate-hosted
 (`checkSuites`). A merge to `main` deploys only after the CI and security checks pass; a
 failing check leaves production on the previous deployment. Roll back by redeploying an earlier
 deployment in Railway. Do not `railway up` it from a working tree; `railway config apply` is
-for service settings only. `tasks-api`, `tasks-publisher`, `recurring-gen` and `empire-mcp` are
-not connected yet and still deploy with `railway up --ci --service <name>`.
+for service settings only. `tasks-api`, `tasks-publisher` and `recurring-gen` deploy the same way
+(connected 2026-10-18). Only `empire-mcp` is not connected (not deployed; see
+`docs/runbooks/remote-mcp.md`).
