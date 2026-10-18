@@ -98,8 +98,11 @@ Override the directory with `--tokens DIR` or `EMPIRE_TOKENS_DIR`.
 
 ### Automatic rotation
 
-`empire-token-rotate` (`src/empire_platform/rotate.py`) runs from the owner's
-crontab every Sunday 19:30 UTC (log `~/.local/state/empire-platform/rotate.log`).
+The hosted `token-rotate` Railway cron (`empire-token-rotate-hosted`,
+`src/empire_platform/hosted_rotate.py`) runs every Sunday 19:30 UTC and reports the
+`token-rotate` heartbeat to the uptime monitor (alert after 8 days without a run).
+`empire-token-rotate` (`src/empire_platform/rotate.py`) is the manual fallback from a
+workstation; the owner's crontab is no longer used (retired 2026-10-18).
 It re-provisions every automation whose local or deployed token expires within
 10 days and pushes the new token on stdin to every target in
 `contracts/automations/v1/deployments.json` (Railway service variables, Vercel
