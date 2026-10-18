@@ -115,3 +115,12 @@ EMPIRE_DB_MODE=hosted .venv/bin/empire-token-rotate --workspace owner \
 ```
 
 Add a target to `deployments.json` whenever an automation token is deployed somewhere new.
+
+Hosted run: the `token-rotate` Railway cron service (`empire-token-rotate-hosted`,
+`src/empire_platform/hosted_rotate.py`, schedule in `.railway/railway.ts`). Deploys (CD, since
+2026-10-18): `token-rotate` is connected to this repository's `main` with Railway's Wait for CI
+(`checkSuites`). A merge to `main` deploys only after the CI and security checks pass; a
+failing check leaves production on the previous deployment. Roll back by redeploying an earlier
+deployment in Railway. Do not `railway up` it from a working tree; `railway config apply` is
+for service settings only. `tasks-api`, `tasks-publisher`, `recurring-gen` and `empire-mcp` are
+not connected yet and still deploy with `railway up --ci --service <name>`.
