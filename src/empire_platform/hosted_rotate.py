@@ -21,7 +21,8 @@ Environment:
     EMPIRE_ROTATE_WORKSPACE         default ``owner``
     EMPIRE_DB_MODE=hosted, EMPIRE_DB_URL_EMPIRE_MIGRATOR (workspace lookup), EMPIRE_DB_URL_PLATFORM_API
     RAILWAY_API_TOKEN, VERCEL_TOKEN (+ VERCEL_TEAM_ID), CLOUDFLARE_API_TOKEN,
-    CLOUDFLARE_ACCOUNT_ID, INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET,
+    CLOUDFLARE_ACCOUNT_ID, INFISICAL_CLIENT_ID + INFISICAL_CLIENT_SECRET (machine identity)
+    or INFISICAL_TOKEN (an access token),
     INFISICAL_PROJECT_ID, INFISICAL_ENVIRONMENT (default dev)
     MONITOR_URL, HEARTBEAT_TOKEN    optional heartbeat
     EMPIRE_ROTATE_FORCE=1           rotate every target now
@@ -287,21 +288,32 @@ class InfisicalApi:
     def __init__(
         self,
         client: httpx.Client,
-        client_id: str,
-        client_secret: str,
+        access_token: str,
         project: str,
         env: str,
     ) -> None:
         self.client = client
         self.project = project
         self.env = env
-        login = client.post(
+        self.headers = {"Authorization": f"Bearer {access_token}"}
+
+    @classmethod
+    def login(
+        cls,
+        client: httpx.Client,
+        client_id: str,
+        client_secret: str,
+        project: str,
+        env: str,
+    ) -> InfisicalApi:
+        """Universal Auth machine identity login."""
+        response = client.post(
             f"{INFISICAL_API}/api/v1/auth/universal-auth/login",
             json={"clientId": client_id, "clientSecret": client_secret},
             timeout=30,
         )
-        login.raise_for_status()
-        self.headers = {"Authorization": f"Bearer {login.json()['accessToken']}"}
+        response.raise_for_status()
+        return cls(client, response.json()["accessToken"], project, env)
 
     def upsert(self, path: str, name: str, value: str) -> None:
         body = {
@@ -474,14 +486,37 @@ def build_apis(env: Mapping[str, str], client: httpx.Client) -> Apis:
         apis.cloudflare = CloudflareApi(
             client, env["CLOUDFLARE_API_TOKEN"], env["CLOUDFLARE_ACCOUNT_ID"]
         )
-    if env.get("INFISICAL_CLIENT_ID") and env.get("INFISICAL_CLIENT_SECRET"):
+    project, environment = (
+        env.get("INFISICAL_PROJECT_ID", ""),
+        env.get("INFISICAL_ENVIRONMENT", "dev"),
+    )
+    if env.get("INFISICAL_TOKEN") and project:
         apis.infisical = InfisicalApi(
-            client,
-            env["INFISICAL_CLIENT_ID"],
-            env["INFISICAL_CLIENT_SECRET"],
-            env["INFISICAL_PROJECT_ID"],
-            env.get("INFISICAL_ENVIRONMENT", "dev"),
+            client, env["INFISICAL_TOKEN"], project, environment
         )
+    elif (
+        env.get("INFISICAL_CLIENT_ID")
+        and env.get("INFISICAL_CLIENT_SECRET")
+        and project
+    ):
+        try:
+            apis.infisical = InfisicalApi.login(
+                client,
+                env["INFISICAL_CLIENT_ID"],
+                env["INFISICAL_CLIENT_SECRET"],
+                project,
+                environment,
+            )
+        except httpx.HTTPError as exc:
+            # Only the Infisical copies fail (counted as push failures); the rest still rotate.
+            emit(
+                {
+                    "action": "login",
+                    "provider": "infisical",
+                    "ok": False,
+                    "error": describe_error(exc),
+                }
+            )
     return apis
 
 

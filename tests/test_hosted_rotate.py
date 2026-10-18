@@ -256,3 +256,41 @@ def test_tokens_never_outlive_their_delegation():
     assert 8 * 86400 < token_ttl(month, soon) <= 9 * 86400
     assert token_ttl(month, datetime.now(UTC) + timedelta(days=90)) == month
     assert token_ttl(month, datetime.now(UTC) - timedelta(days=1)) == 60
+
+
+def test_a_failed_infisical_login_fails_only_the_infisical_copies(capsys):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "universal-auth/login" in str(request.url):
+            return httpx.Response(401, json={"message": "bad"})
+        return Recorder(None)(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    apis = hr.build_apis(
+        {
+            "CLOUDFLARE_API_TOKEN": "c",
+            "CLOUDFLARE_ACCOUNT_ID": "acct",
+            "INFISICAL_CLIENT_ID": "id",
+            "INFISICAL_CLIENT_SECRET": "secret",
+            "INFISICAL_PROJECT_ID": "proj",
+        },
+        client,
+    )
+    assert apis.infisical is None and apis.cloudflare is not None
+    failures = hr.run(
+        TARGETS[2:],
+        {"owner-mcp": "forced"},
+        lambda n: dict.fromkeys(n, "a.b.c"),
+        apis,
+        False,
+    )
+    assert failures == 1
+    out = capsys.readouterr().out
+    assert '"provider": "infisical"' in out and "HTTP 401" in out
+
+
+def test_an_access_token_skips_the_login():
+    recorder = Recorder(None)
+    client = httpx.Client(transport=httpx.MockTransport(recorder))
+    apis = hr.build_apis({"INFISICAL_TOKEN": "t", "INFISICAL_PROJECT_ID": "p"}, client)
+    assert apis.infisical is not None
+    assert not any("universal-auth" in u for _, u, _ in recorder.calls)
