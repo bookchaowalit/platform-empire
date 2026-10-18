@@ -1842,12 +1842,16 @@ def _pem_digest(pem: str) -> str:
     """SHA-256 of the canonical public key (DER SubjectPublicKeyInfo), so the same key in
     another encoding (PKCS#1, rewrapped lines) compares equal; unparsable text falls back
     to the PEM with whitespace removed."""
+    from cryptography.exceptions import UnsupportedAlgorithm
     from cryptography.hazmat.primitives import serialization
 
     try:
         key = serialization.load_pem_public_key(pem.strip().encode())
     except (ValueError, TypeError):
-        return hashlib.sha256("".join(pem.split()).encode()).hexdigest()
+        try:  # PyJWT also accepts OpenSSH "ssh-rsa" keys: compare those canonically too
+            key = serialization.load_ssh_public_key(pem.strip().encode())
+        except (ValueError, TypeError, UnsupportedAlgorithm):
+            return hashlib.sha256("".join(pem.split()).encode()).hexdigest()
     der = key.public_bytes(
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
     )

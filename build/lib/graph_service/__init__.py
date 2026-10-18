@@ -1,0 +1,1 @@
+"""Empire Graph service (minimal)."""

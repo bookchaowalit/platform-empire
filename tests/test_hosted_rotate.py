@@ -381,3 +381,26 @@ def test_vercel_preflight_reads_the_configured_projects():
     assert apis.vercel is not None
     assert any("/v9/projects/owner-web" in u for _, u, _ in recorder.calls)
     assert not any(u.endswith("/v2/user") for _, u, _ in recorder.calls)
+
+
+def test_contracts_are_found_where_the_image_puts_them(tmp_path, monkeypatch):
+    import shutil
+    from pathlib import Path
+
+    from empire_platform import devdb
+
+    image = tmp_path / "app"
+    shutil.copytree(devdb.REPO_ROOT / "contracts", image / "contracts")
+    monkeypatch.setattr(
+        devdb, "REPO_ROOT", tmp_path / "site-packages"
+    )  # as after pip install .
+    monkeypatch.delenv("EMPIRE_CONTRACTS_DIR", raising=False)
+    monkeypatch.chdir(image)
+    assert devdb.contracts_dir().resolve() == (image / "contracts").resolve()
+    monkeypatch.setenv("EMPIRE_CONTRACTS_DIR", str(image / "contracts"))
+    assert devdb.contracts_dir() == image / "contracts"
+    monkeypatch.delenv("EMPIRE_CONTRACTS_DIR")
+    monkeypatch.chdir(tmp_path)
+    if not Path("/app/contracts").is_dir():
+        with pytest.raises(FileNotFoundError, match="EMPIRE_CONTRACTS_DIR"):
+            devdb.contracts_dir()
