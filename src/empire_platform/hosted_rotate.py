@@ -719,12 +719,15 @@ def main(env: Mapping[str, str] | None = None) -> int:
         ) as exc:
             heartbeat(client, env, False, f"{type(exc).__name__}")
             raise
-        heartbeat(
-            client,
-            env,
-            failures == 0,
-            f"{len(due)} rotated, {failures} failure(s)" if due else "nothing due",
-        )
+        if (
+            not dry_run
+        ):  # a plan is not a rotation: it must not reset the missed-run alarm
+            heartbeat(
+                client,
+                env,
+                failures == 0,
+                f"{len(due)} rotated, {failures} failure(s)" if due else "nothing due",
+            )
     return 1 if failures else 0
 
 
