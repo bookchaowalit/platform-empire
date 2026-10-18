@@ -44,6 +44,8 @@ class Recorder:
     def __init__(self, deployed: str | None) -> None:
         self.deployed = deployed
         self.vercel_state = "READY"
+        self.vercel_auth = True
+        self.infisical_auth = True
         self.vercel_failed: list = []
         self.calls: list[tuple[str, str, dict]] = []
 
@@ -68,6 +70,12 @@ class Recorder:
             return httpx.Response(
                 200, json={"deployments": [{"uid": "d1", "name": "owner-web"}]}
             )
+        if "vercel" in url and url.endswith("/v2/user"):
+            return httpx.Response(200 if self.vercel_auth else 403, json={})
+        if "cloudflare" in url and "/tokens/verify" in url:
+            return httpx.Response(200, json={"result": {"status": "active"}})
+        if "infisical" in url and request.method == "GET":
+            return httpx.Response(200 if self.infisical_auth else 401, json={})
         if "vercel" in url and request.method == "POST" and "/v13/deployments" in url:
             return httpx.Response(200, json={"id": "dpl1"})
         if "vercel" in url and "/v13/deployments/dpl1" in url:
@@ -311,3 +319,26 @@ def test_only_fully_deliverable_automations_are_minted():
     failures = hr.run(TARGETS[:2], due, mint, apis, False)
     assert minted == [["goals-publisher"]]
     assert failures == 1
+
+
+def test_preflight_drops_providers_whose_credentials_fail(capsys):
+    recorder = Recorder(None)
+    recorder.vercel_auth = False
+    recorder.infisical_auth = False
+    apis, _ = _apis(recorder)
+    apis.infisical = hr.InfisicalApi(apis.railway.client, "expired", "proj", "dev")
+    hr.preflight(apis)
+    assert apis.vercel is None and apis.infisical is None
+    assert apis.railway is not None and apis.cloudflare is not None
+    minted: list[list[str]] = []
+
+    def mint(names):
+        minted.append(names)
+        return dict.fromkeys(names, "a.b.c")
+
+    due = {"goals-publisher": "forced", "solo-web": "forced", "owner-mcp": "forced"}
+    failures = hr.run(TARGETS, due, mint, apis, False)
+    assert minted == [["goals-publisher"]]
+    assert failures == 3
+    out = capsys.readouterr().out
+    assert '"action": "preflight"' in out

@@ -128,15 +128,8 @@ class RailwayApi:
 
     def _ids(self, project: str, service: str) -> tuple[str, str, str]:
         if self._projects is None:
-            data = self._query(
-                "query { projects { edges { node { id name"
-                " environments { edges { node { id name } } }"
-                " services { edges { node { id name } } } } } } }",
-                {},
-            )
-            self._projects = {
-                edge["node"]["name"]: edge["node"] for edge in data["projects"]["edges"]
-            }
+            self._ids_cache_warm()
+        assert self._projects is not None
         node = self._projects.get(project)
         if node is None:
             raise LookupError(f"railway project {project!r} not found")
@@ -149,6 +142,20 @@ class RailwayApi:
         if "production" not in envs or service not in services:
             raise LookupError(f"railway service {project}/{service} not found")
         return node["id"], envs["production"], services[service]
+
+    def verify(self) -> None:
+        self._ids_cache_warm()
+
+    def _ids_cache_warm(self) -> None:
+        data = self._query(
+            "query { projects { edges { node { id name"
+            " environments { edges { node { id name } } }"
+            " services { edges { node { id name } } } } } } }",
+            {},
+        )
+        self._projects = {
+            edge["node"]["name"]: edge["node"] for edge in data["projects"]["edges"]
+        }
 
     def read(self, project: str, service: str, name: str) -> str | None:
         project_id, env_id, service_id = self._ids(project, service)
@@ -181,6 +188,11 @@ class VercelApi:
         self.client = client
         self.headers = {"Authorization": f"Bearer {token}"}
         self.params = {"teamId": team} if team else {}
+
+    def verify(self) -> None:
+        self.client.get(
+            f"{VERCEL_API}/v2/user", headers=self.headers, timeout=30
+        ).raise_for_status()
 
     def upsert(self, project: str, name: str, value: str) -> None:
         response = self.client.post(
@@ -272,6 +284,16 @@ class CloudflareApi:
         self.headers = {"Authorization": f"Bearer {token}"}
         self.account = account
 
+    def verify(self) -> None:
+        response = self.client.get(
+            f"{CLOUDFLARE_API}/accounts/{self.account}/tokens/verify",
+            headers=self.headers,
+            timeout=30,
+        )
+        response.raise_for_status()
+        if (response.json().get("result") or {}).get("status") != "active":
+            raise RuntimeError("cloudflare token is not active")
+
     def put_secret(self, worker: str, name: str, value: str) -> None:
         response = self.client.put(
             f"{CLOUDFLARE_API}/accounts/{self.account}/workers/scripts/{worker}/secrets",
@@ -315,6 +337,18 @@ class InfisicalApi:
         response.raise_for_status()
         return cls(client, response.json()["accessToken"], project, env)
 
+    def verify(self) -> None:
+        self.client.get(
+            f"{INFISICAL_API}/api/v3/secrets/raw",
+            params={
+                "workspaceId": self.project,
+                "environment": self.env,
+                "secretPath": "/empire-platform",
+            },
+            headers=self.headers,
+            timeout=30,
+        ).raise_for_status()
+
     def upsert(self, path: str, name: str, value: str) -> None:
         body = {
             "workspaceId": self.project,
@@ -338,6 +372,27 @@ class Apis:
     vercel: VercelApi | None = None
     cloudflare: CloudflareApi | None = None
     infisical: InfisicalApi | None = None
+
+
+def preflight(apis: Apis) -> None:
+    """Check every configured provider's credentials before anything is minted; a provider
+    that fails is dropped, so the automations it serves are skipped, not revoked."""
+    for provider in sorted(PROVIDERS):
+        api = getattr(apis, provider)
+        if api is None:
+            continue
+        try:
+            api.verify()
+        except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
+            setattr(apis, provider, None)
+            emit(
+                {
+                    "action": "preflight",
+                    "provider": provider,
+                    "ok": False,
+                    "error": describe_error(exc),
+                }
+            )
 
 
 def due_hosted(
@@ -611,6 +666,7 @@ def main(env: Mapping[str, str] | None = None) -> int:
     with httpx.Client(headers={"User-Agent": USER_AGENT}) as client:
         try:
             apis = build_apis(env, client)
+            preflight(apis)
             due = due_hosted(
                 targets,
                 apis,
