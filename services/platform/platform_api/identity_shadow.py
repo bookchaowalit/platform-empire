@@ -20,10 +20,28 @@ import queue
 import re
 import sys
 import threading
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+
+from empire_platform._sentry import capture
+
+# The shadow runs once per authorization decision: report each failure kind at most once an hour.
+_REPORT_INTERVAL_SECONDS = 3600.0
+_last_reported: dict[str, float] = {}
+
+
+def _report(kind: str, exc: BaseException) -> None:
+    now = time.monotonic()
+    if (
+        now - _last_reported.get(kind, -_REPORT_INTERVAL_SECONDS)
+        >= _REPORT_INTERVAL_SECONDS
+    ):
+        _last_reported[kind] = now
+        capture(exc)
+
 
 log = logging.getLogger("platform_api.identity_shadow")
 TIMEOUT = httpx.Timeout(2.0, connect=1.0, pool=0.5)
@@ -105,6 +123,7 @@ class IdentityShadow:
             try:
                 self.compare(*job)
             except Exception as exc:  # noqa: BLE001 - the mirror must never stop or surface errors
+                _report("error", exc)
                 log.warning(
                     "identity_shadow outcome=error error=%s", type(exc).__name__
                 )
@@ -126,6 +145,7 @@ class IdentityShadow:
         try:
             response = self.client.post(self.url, json=body, headers=headers)
         except httpx.HTTPError as exc:
+            _report("unreachable", exc)
             log.warning(
                 "identity_shadow outcome=unreachable action=%s error=%s",
                 action,
@@ -144,7 +164,8 @@ class IdentityShadow:
         try:
             shadow = response.json()
             shadow_decision, shadow_reason = shadow["decision"], shadow["reason"]
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError) as exc:
+            _report("invalid_response", exc)
             log.warning("identity_shadow outcome=invalid_response action=%s", action)
             return
         outcome = (
