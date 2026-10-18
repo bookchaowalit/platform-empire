@@ -19,7 +19,7 @@ Environment:
     EMPIRE_SIGNING_PRIVATE_KEY_PEM  issuer private key (Infisical /empire-platform)
     EMPIRE_TOKEN_ISSUER             default ``empire-platform``
     EMPIRE_ROTATE_WORKSPACE         default ``owner``
-    EMPIRE_DB_MODE=hosted, EMPIRE_DB_URL_POSTGRES, EMPIRE_DB_URL_PLATFORM_API
+    EMPIRE_DB_MODE=hosted, EMPIRE_DB_URL_EMPIRE_MIGRATOR (workspace lookup), EMPIRE_DB_URL_PLATFORM_API
     RAILWAY_API_TOKEN, VERCEL_TOKEN (+ VERCEL_TEAM_ID), CLOUDFLARE_API_TOKEN,
     CLOUDFLARE_ACCOUNT_ID, INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET,
     INFISICAL_PROJECT_ID, INFISICAL_ENVIRONMENT (default dev)
@@ -48,6 +48,7 @@ VERCEL_API = "https://api.vercel.com"
 CLOUDFLARE_API = "https://api.cloudflare.com/client/v4"
 INFISICAL_API = "https://app.infisical.com"
 PROVIDERS = {"railway", "vercel", "cloudflare", "infisical"}
+USER_AGENT = "empire-token-rotate/1 (+https://github.com/bookchaowalit/platform-empire)"
 
 
 @dataclass(frozen=True)
@@ -114,9 +115,14 @@ class RailwayApi:
         response.raise_for_status()
         body = response.json()
         if body.get("errors"):
-            raise RuntimeError(
-                "railway: " + "; ".join(e.get("message", "?") for e in body["errors"])
+            # Provider messages can echo submitted values; keep only their error codes.
+            codes = sorted(
+                {
+                    str((e.get("extensions") or {}).get("code") or "unknown")
+                    for e in body["errors"]
+                }
             )
+            raise RuntimeError("railway graphql error: " + ",".join(codes))
         return body["data"]
 
     def _ids(self, project: str, service: str) -> tuple[str, str, str]:
@@ -189,8 +195,13 @@ class VercelApi:
             timeout=30,
         )
         response.raise_for_status()
+        # A 2xx answer can still list per-variable failures.
+        if (response.json() or {}).get("failed"):
+            raise RuntimeError("vercel refused the environment variable")
 
-    def redeploy(self, project: str) -> None:
+    def redeploy(
+        self, project: str, wait_seconds: float = 900, poll: float = 10
+    ) -> None:
         listing = self.client.get(
             f"{VERCEL_API}/v6/deployments",
             params={
@@ -222,6 +233,36 @@ class VercelApi:
             timeout=60,
         )
         response.raise_for_status()
+        deployment = response.json().get("id")
+        if not deployment:
+            raise RuntimeError("vercel returned no deployment id")
+        # The build runs asynchronously; production keeps the old token until it is READY.
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            status = self.client.get(
+                f"{VERCEL_API}/v13/deployments/{deployment}",
+                params=self.params,
+                headers=self.headers,
+                timeout=30,
+            )
+            status.raise_for_status()
+            state = status.json().get("readyState")
+            if state == "READY":
+                return
+            if state in {"ERROR", "CANCELED"}:
+                raise RuntimeError(f"vercel deployment ended {state}")
+            if time.monotonic() >= deadline:
+                raise RuntimeError("vercel deployment did not become ready in time")
+            time.sleep(poll)
+
+
+def describe_error(exc: Exception) -> str:
+    """Error text safe for logs: the type and HTTP status, never a provider message."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.HTTPError):
+        return type(exc).__name__
+    return f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
 class CloudflareApi:
@@ -389,7 +430,7 @@ def run(
             if target.provider == "vercel" and target.project not in vercel_projects:
                 vercel_projects.append(target.project)
         except (httpx.HTTPError, LookupError, RuntimeError) as exc:
-            ok, error = False, f"{type(exc).__name__}: {str(exc)[:160]}"
+            ok, error = False, describe_error(exc)
         failures += 0 if ok else 1
         event: dict[str, Any] = {
             "action": "push",
@@ -408,8 +449,8 @@ def run(
         try:
             apis.vercel.redeploy(project)  # type: ignore[union-attr]
             ok, error = True, None
-        except (httpx.HTTPError, LookupError) as exc:
-            ok, error = False, f"{type(exc).__name__}: {str(exc)[:160]}"
+        except (httpx.HTTPError, LookupError, RuntimeError) as exc:
+            ok, error = False, describe_error(exc)
         failures += 0 if ok else 1
         emit(
             {
@@ -509,7 +550,7 @@ def main(env: Mapping[str, str] | None = None) -> int:
     if not private_pem:
         raise SystemExit("EMPIRE_SIGNING_PRIVATE_KEY_PEM is not set")
     targets, within = load_hosted_targets()
-    with httpx.Client() as client:
+    with httpx.Client(headers={"User-Agent": USER_AGENT}) as client:
         try:
             apis = build_apis(env, client)
             due = due_hosted(

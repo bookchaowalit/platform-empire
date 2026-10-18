@@ -252,9 +252,12 @@ def test_production_tokens(cluster, monkeypatch, tmp_path):
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         claims = jwt.decode(path.read_text(), options={"verify_signature": False})
         short = path.name == "owner-manual.jwt"
-        assert claims["iss"] == "empire-prod" and claims["exp"] - claims["iat"] == (
-            3600 if short else 30 * 86400
-        )
+        lifetime = claims["exp"] - claims["iat"]
+        assert claims["iss"] == "empire-prod"
+        if short:
+            assert lifetime == 3600
+        else:  # bounded by the 30-day delegation it was minted under, never past it
+            assert 30 * 86400 - 300 <= lifetime <= 30 * 86400
     owner = jwt.decode(
         (tokens / "owner-manual.jwt").read_text(), options={"verify_signature": False}
     )
@@ -516,3 +519,25 @@ def test_next_key_config_is_validated_and_published():
 
     kids = {k["kid"] for k in jwks.jwk_set(*config.main_public_key_pems)["keys"]}
     assert kids == {jwks.rsa_jwk(current)["kid"], jwks.rsa_jwk(nxt)["kid"]}
+
+
+def test_key_separation_compares_the_key_not_its_encoding():
+    from cryptography.hazmat.primitives import serialization
+    from tasks_api.app import _pem_digest
+
+    private, spki = _rsa_pair()
+    key = serialization.load_pem_private_key(private.encode(), None).public_key()
+    pkcs1 = key.public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.PKCS1
+    ).decode()
+    assert "RSA PUBLIC KEY" in pkcs1
+    assert _pem_digest(pkcs1) == _pem_digest(spki)
+    base = {
+        "EMPIRE_DB_MODE": "hosted",
+        "TASKS_API_JWT_PUBLIC_KEY_PEM": spki.strip(),
+        "TASKS_API_JWT_ISSUER": "empire-prod",
+    }
+    with pytest.raises(SystemExit, match="differ"):
+        server_config({**base, "TASKS_API_MCP_PUBLIC_KEY_PEM": pkcs1})
+    with pytest.raises(SystemExit, match="differ from the current key"):
+        server_config({**base, "TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM": pkcs1})

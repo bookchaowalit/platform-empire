@@ -43,6 +43,8 @@ PROJECTS = {
 class Recorder:
     def __init__(self, deployed: str | None) -> None:
         self.deployed = deployed
+        self.vercel_state = "READY"
+        self.vercel_failed: list = []
         self.calls: list[tuple[str, str, dict]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -66,8 +68,12 @@ class Recorder:
             return httpx.Response(
                 200, json={"deployments": [{"uid": "d1", "name": "owner-web"}]}
             )
+        if "vercel" in url and request.method == "POST" and "/v13/deployments" in url:
+            return httpx.Response(200, json={"id": "dpl1"})
+        if "vercel" in url and "/v13/deployments/dpl1" in url:
+            return httpx.Response(200, json={"readyState": self.vercel_state})
         if "vercel" in url:
-            return httpx.Response(200, json={})
+            return httpx.Response(200, json={"failed": self.vercel_failed})
         if "cloudflare" in url:
             return httpx.Response(200, json={"success": True})
         if "universal-auth/login" in url:
@@ -189,3 +195,64 @@ def test_missing_provider_credentials_count_as_failures(capsys):
 def test_main_requires_the_signing_key():
     with pytest.raises(SystemExit, match="EMPIRE_SIGNING_PRIVATE_KEY_PEM"):
         hr.main({})
+
+
+def test_vercel_partial_failure_and_failed_build_are_failures(capsys):
+    for field, value in (
+        ("vercel_failed", [{"error": {"code": "x"}}]),
+        ("vercel_state", "ERROR"),
+    ):
+        recorder = Recorder(None)
+        setattr(recorder, field, value)
+        apis, _ = _apis(recorder)
+        failures = hr.run(
+            TARGETS[1:2],
+            {"solo-web": "forced"},
+            lambda n: dict.fromkeys(n, "a.b.c"),
+            apis,
+            False,
+        )
+        assert failures == 1, field
+    capsys.readouterr()
+
+
+def test_provider_messages_never_reach_the_log(capsys):
+    def leaky(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "projects" in body["query"]:
+            return httpx.Response(200, json=PROJECTS)
+        echoed = body["variables"]["input"]["value"]
+        return httpx.Response(
+            200,
+            json={
+                "errors": [
+                    {"message": f"bad value {echoed}", "extensions": {"code": "BAD"}}
+                ]
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(leaky))
+    apis = hr.Apis(railway=hr.RailwayApi(client, "r"))
+    failures = hr.run(
+        TARGETS[:1],
+        {"goals-publisher": "forced"},
+        lambda n: dict.fromkeys(n, "SECRET.JWT.VALUE"),
+        apis,
+        False,
+    )
+    out = capsys.readouterr().out
+    assert failures == 1
+    assert "SECRET" not in out and "BAD" in out
+
+
+def test_tokens_never_outlive_their_delegation():
+    from datetime import UTC, datetime, timedelta
+
+    from empire_platform.automations import token_ttl
+
+    month = 30 * 86400
+    assert token_ttl(month, None) == month
+    soon = datetime.now(UTC) + timedelta(days=9)
+    assert 8 * 86400 < token_ttl(month, soon) <= 9 * 86400
+    assert token_ttl(month, datetime.now(UTC) + timedelta(days=90)) == month
+    assert token_ttl(month, datetime.now(UTC) - timedelta(days=1)) == 60

@@ -43,6 +43,9 @@ class Provisioned:
     owner: uuid.UUID
     scopes: tuple[str, ...]
     renewed: bool
+    expires_at: datetime | None = (
+        None  # the delegation's expiry; a token must not outlive it
+    )
 
 
 def load_registry(path: Path = REGISTRY) -> dict:
@@ -110,7 +113,13 @@ def provision(
             ):
                 results.append(
                     Provisioned(
-                        automation["id"], identity, current["id"], owner, scopes, False
+                        automation["id"],
+                        identity,
+                        current["id"],
+                        owner,
+                        scopes,
+                        False,
+                        current["expires_at"],
                     )
                 )
                 continue
@@ -122,16 +131,34 @@ def provision(
             delegation = conn.execute("SELECT platform.uuid_v7() AS id").fetchone()[
                 "id"
             ]
-            conn.execute(
+            expires_at = conn.execute(
                 "INSERT INTO platform.delegations (id, workspace_id, grantor_identity_id, grantee_identity_id, scopes,"
-                " expires_at) VALUES (%s, %s, %s, %s, %s::platform.permission[], now() + make_interval(days => %s))",
+                " expires_at) VALUES (%s, %s, %s, %s, %s::platform.permission[], now() + make_interval(days => %s))"
+                " RETURNING expires_at",
                 (delegation, workspace_id, owner, identity, list(scopes), days),
-            )
+            ).fetchone()["expires_at"]
             results.append(
-                Provisioned(automation["id"], identity, delegation, owner, scopes, True)
+                Provisioned(
+                    automation["id"],
+                    identity,
+                    delegation,
+                    owner,
+                    scopes,
+                    True,
+                    expires_at,
+                )
             )
         conn.commit()
     return results
+
+
+def token_ttl(ttl: int, delegation_expires: datetime | None) -> int:
+    """Never let a token outlive its delegation: a shorter token is rotated (and the
+    delegation renewed) by the next run instead of failing once the delegation lapses."""
+    if delegation_expires is None:
+        return ttl
+    remaining = round((delegation_expires - datetime.now(UTC)).total_seconds())
+    return max(60, min(ttl, remaining))
 
 
 def write_token(directory: Path, name: str, token: str) -> Path:
@@ -255,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
                     ws=found[0],
                     delegation=item.delegation,
                     obo=item.owner,
-                    ttl=ttl,
+                    ttl=token_ttl(ttl, item.expires_at),
                     issuer=issuer,
                 ),
             )

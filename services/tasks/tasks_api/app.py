@@ -1839,8 +1839,19 @@ HOSTED_MAX_LIFETIME = HARD_MAX_LIFETIME_SECONDS  # delegated tokens only: each c
 
 
 def _pem_digest(pem: str) -> str:
-    """SHA-256 of the PEM with whitespace and line wrapping removed."""
-    return hashlib.sha256("".join(pem.split()).encode()).hexdigest()
+    """SHA-256 of the canonical public key (DER SubjectPublicKeyInfo), so the same key in
+    another encoding (PKCS#1, rewrapped lines) compares equal; unparsable text falls back
+    to the PEM with whitespace removed."""
+    from cryptography.hazmat.primitives import serialization
+
+    try:
+        key = serialization.load_pem_public_key(pem.strip().encode())
+    except (ValueError, TypeError):
+        return hashlib.sha256("".join(pem.split()).encode()).hexdigest()
+    der = key.public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return hashlib.sha256(der).hexdigest()
 
 
 def _dev_key_digest() -> str | None:
