@@ -24,13 +24,13 @@ from pathlib import Path
 from psycopg.rows import dict_row
 
 from empire_platform.devdb import (
-    REPO_ROOT,
     Cluster,
+    contracts_dir,
     default_cluster,
     write_private_file,
 )
 
-REGISTRY = REPO_ROOT / "contracts" / "automations" / "v1" / "automations.json"
+REGISTRY = contracts_dir() / "automations" / "v1" / "automations.json"
 RENEW_BEFORE = timedelta(
     days=10
 )  # = rotate_within_days: a due token always renews a closing delegation

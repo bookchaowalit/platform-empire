@@ -23,6 +23,27 @@ from pathlib import Path
 import psycopg
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def contracts_dir() -> Path:
+    """The contracts folder: EMPIRE_CONTRACTS_DIR, the source checkout, or the image's /app.
+
+    ``pip install .`` puts this package in site-packages, where REPO_ROOT no longer holds
+    contracts/; the Docker image copies them to /app/contracts (its WORKDIR)."""
+    candidates = [
+        os.environ.get("EMPIRE_CONTRACTS_DIR"),
+        REPO_ROOT / "contracts",
+        Path.cwd() / "contracts",
+        Path("/app/contracts"),
+    ]
+    for candidate in candidates:
+        if candidate and (Path(candidate) / "automations" / "v1").is_dir():
+            return Path(candidate)
+    raise FileNotFoundError(
+        "contracts/automations/v1 not found; set EMPIRE_CONTRACTS_DIR"
+    )
+
+
 BOOTSTRAP = REPO_ROOT / "db" / "bootstrap" / "roles.sql"
 MIGRATION_DIRS = [
     REPO_ROOT / "services" / "platform" / "migrations",

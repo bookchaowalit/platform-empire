@@ -541,3 +541,25 @@ def test_key_separation_compares_the_key_not_its_encoding():
         server_config({**base, "TASKS_API_MCP_PUBLIC_KEY_PEM": pkcs1})
     with pytest.raises(SystemExit, match="differ from the current key"):
         server_config({**base, "TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM": pkcs1})
+
+
+def test_key_separation_also_covers_openssh_encoding():
+    from cryptography.hazmat.primitives import serialization
+    from tasks_api.app import _pem_digest
+
+    private, spki = _rsa_pair()
+    key = serialization.load_pem_private_key(private.encode(), None).public_key()
+    ssh = key.public_bytes(
+        serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
+    ).decode()
+    assert ssh.startswith("ssh-rsa ")
+    assert _pem_digest(ssh) == _pem_digest(spki)
+    base = {
+        "EMPIRE_DB_MODE": "hosted",
+        "TASKS_API_JWT_PUBLIC_KEY_PEM": spki.strip(),
+        "TASKS_API_JWT_ISSUER": "empire-prod",
+    }
+    with pytest.raises(SystemExit, match="differ"):
+        server_config({**base, "TASKS_API_MCP_PUBLIC_KEY_PEM": ssh})
+    with pytest.raises(SystemExit, match="differ from the current key"):
+        server_config({**base, "TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM": ssh})

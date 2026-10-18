@@ -33,7 +33,15 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEPLOYMENTS = REPO_ROOT / "contracts" / "automations" / "v1" / "deployments.json"
+
+
+def _deployments() -> Path:
+    from empire_platform.devdb import contracts_dir
+
+    return contracts_dir() / "automations" / "v1" / "deployments.json"
+
+
+DEPLOYMENTS = _deployments()
 DAY = 86400
 HOSTED_ONLY = frozenset({"cloudflare", "infisical"})
 
@@ -334,11 +342,7 @@ def main(argv: list[str] | None = None) -> int:
         args.force,
     )
     if not args.only:
-        registry = json.loads(
-            (
-                REPO_ROOT / "contracts" / "automations" / "v1" / "automations.json"
-            ).read_text()
-        )
+        registry = json.loads((DEPLOYMENTS.parent / "automations.json").read_text())
         known = {item["id"] for item in registry["automations"]}
         due.update(local_due(args.tokens, known, within, time.time(), skip=set(due)))
 
