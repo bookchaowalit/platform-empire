@@ -63,6 +63,8 @@ class TokenVerifier:
         None  # second issuer, trusted only for MCP_SCOPES; off unless a key is given too
     )
     mcp_public_key_pem: str | None = None
+    # Rollover keys for the main issuer: tokens signed by any of them verify too (key rotation).
+    extra_public_key_pems: tuple[str, ...] = ()
     # Optional second gate: (identity, workspace) pairs MCP tokens may name; None = any mapped by empire-mcp.
     mcp_subjects: frozenset[tuple[uuid.UUID, uuid.UUID]] | None = None
 
@@ -86,14 +88,7 @@ class TokenVerifier:
         ):
             return self._verify_mcp(token, channel)
         try:
-            claims = jwt.decode(
-                token,
-                self.public_key_pem,
-                algorithms=["RS256"],
-                audience=self.audience,
-                issuer=self.issuer,
-                options={"require": REQUIRED_CLAIMS},
-            )
+            claims = self._decode_main(token)
             lifetime = claims["exp"] - claims["iat"]
             # A token without a delegation (owner token) has no revocation record: always short-lived.
             limit = (
@@ -128,6 +123,26 @@ class TokenVerifier:
             on_behalf_of=on_behalf_of or actor,
             delegation=delegation,
             channel=channel,
+        )
+
+    def _decode_main(self, token: str) -> dict:
+        """Verify with the main key, then each rollover key; only a bad signature moves on."""
+        keys = (self.public_key_pem, *self.extra_public_key_pems)
+        for key in keys[:-1]:
+            try:
+                return self._decode_with(token, key)
+            except jwt.InvalidSignatureError:
+                continue
+        return self._decode_with(token, keys[-1])
+
+    def _decode_with(self, token: str, key: str) -> dict:
+        return jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            audience=self.audience,
+            issuer=self.issuer,
+            options={"require": REQUIRED_CLAIMS},
         )
 
     @staticmethod
