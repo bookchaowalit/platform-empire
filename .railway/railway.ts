@@ -3,7 +3,7 @@ import { defineRailway, project, service } from "railway/iac";
 // empire-platform owns only its own services in the shared project.
 // Variables stay unmanaged: secrets live in Railway, never in this file.
 // Every service builds from the repository Dockerfile and picks its process
-// from EMPIRE_SERVICE (api, publisher, mcp, recurring, or rotate); every service but the
+// from EMPIRE_SERVICE (api, publisher, recurring, or rotate); every service but the
 // two crons answers /health.
 export const partial = "empire-platform";
 
@@ -17,11 +17,9 @@ export default defineRailway(() => {
     healthcheckTimeout: 60,
   });
 
-  // Remote MCP (Streamable HTTP at /mcp) behind Clerk OAuth; see docs/runbooks/remote-mcp.md.
-  const empireMcp = service("empire-mcp", {
-    healthcheck: "/health",
-    healthcheckTimeout: 60,
-  });
+  // The hosted remote MCP (empire-mcp, Clerk OAuth) was never deployed and was retired on
+  // 2026-10-18: the Cloudflare Worker tool hub (platform-mcp-remote-worker) serves every cell,
+  // tasks included. The code stays for the local stdio server (`empire-mcp`).
 
   // Daily cron run (EMPIRE_SERVICE=recurring): generates the due instances of recurring
   // tasks through the Tasks API, then exits. 15 17 * * * UTC = 00:15 Asia/Bangkok, the
@@ -42,6 +40,6 @@ export default defineRailway(() => {
 
   return project("platform-empire", {
     variables: { managed: false },
-    resources: [tasksApi, tasksPublisher, empireMcp, recurringGen, tokenRotate],
+    resources: [tasksApi, tasksPublisher, recurringGen, tokenRotate],
   });
 });

@@ -1,5 +1,11 @@
 # Remote MCP (Clerk)
 
+> **Retired 2026-10-18.** This hosted server was never deployed; its Railway service was
+> removed. Remote MCP access now goes through the Cloudflare Worker tool hub
+> (`bookchaowalit/platform-mcp-remote-worker`: `list_cells`, `describe_cell`, `call_cell` over
+> every cell, tasks included). The local stdio `empire-mcp` is unaffected. The text below is
+> kept as the design record in case a Clerk-backed server is wanted again.
+
 `empire-mcp` serves the `tasks.*` tools (and `graph.*` when a graph API is
 configured) over MCP Streamable HTTP, so Claude on the web, on mobile, and in
 cloud agents can connect. Clerk is the OAuth 2.1 authorization server; this
