@@ -1,6 +1,6 @@
 {
   "contract": "empire-platform.automation-deployments.v1",
-  "description": "Where each automation token is deployed, so empire-token-rotate can push renewed tokens. Values are never stored here; checkout paths are relative to the Book Dev private folder (EMPIRE_CHECKOUTS_ROOT).",
+  "description": "Where each automation token is deployed, so the token rotation (hosted: empire_platform.hosted_rotate, a Railway cron; fallback: empire-token-rotate) can push renewed tokens. Values are never stored here. Railway targets name the project by `checkout` (the Railway project has the same name); Vercel targets name the project in `vercel_project`; Cloudflare targets name the Worker; Infisical targets name the folder.",
   "rotate_within_days": 10,
   "targets": [
     {"automation": "decisions-publisher", "provider": "railway", "checkout": "life-decisions-api", "service": "decisions-publisher", "variable": "DECISIONS_PUBLISHER_TOKEN"},
@@ -18,7 +18,10 @@
     {"automation": "roles-skills-publisher", "provider": "railway", "checkout": "life-roles-skills-api", "service": "roles-skills-publisher", "variable": "ROLES_SKILLS_PUBLISHER_TOKEN"},
     {"automation": "roles-skills-publisher", "provider": "railway", "checkout": "life-roles-skills-api", "service": "roles-skills-api", "variable": "ROLES_SKILLS_PUBLISHER_TOKEN"},
     {"automation": "recurring-gen", "provider": "railway", "checkout": "platform-empire", "service": "recurring-gen", "variable": "RECURRING_GEN_TOKEN"},
-    {"automation": "solo-web", "provider": "vercel", "checkout": "life-dashboard-web", "variable": "EMPIRE_CELL_TOKEN"},
-    {"automation": "accounts-web", "provider": "vercel", "checkout": "platform-accounts-api/web", "variable": "ACCOUNTS_API_TOKEN"}
+    {"automation": "solo-web", "provider": "vercel", "checkout": "life-dashboard-web", "variable": "EMPIRE_CELL_TOKEN", "vercel_project": "owner-web"},
+    {"automation": "accounts-web", "provider": "vercel", "checkout": "platform-accounts-api/web", "variable": "ACCOUNTS_API_TOKEN", "vercel_project": "accounts-web"},
+    {"automation": "owner-mcp", "provider": "cloudflare", "worker": "solo-empire-mcp-remote", "variable": "EMPIRE_OWNER_MCP_TOKEN"},
+    {"automation": "owner-mcp", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_OWNER_MCP"},
+    {"automation": "owner-cli", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_OWNER_CLI"}
   ]
 }

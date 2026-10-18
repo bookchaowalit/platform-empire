@@ -1839,8 +1839,19 @@ HOSTED_MAX_LIFETIME = HARD_MAX_LIFETIME_SECONDS  # delegated tokens only: each c
 
 
 def _pem_digest(pem: str) -> str:
-    """SHA-256 of the PEM with whitespace and line wrapping removed."""
-    return hashlib.sha256("".join(pem.split()).encode()).hexdigest()
+    """SHA-256 of the canonical public key (DER SubjectPublicKeyInfo), so the same key in
+    another encoding (PKCS#1, rewrapped lines) compares equal; unparsable text falls back
+    to the PEM with whitespace removed."""
+    from cryptography.hazmat.primitives import serialization
+
+    try:
+        key = serialization.load_pem_public_key(pem.strip().encode())
+    except (ValueError, TypeError):
+        return hashlib.sha256("".join(pem.split()).encode()).hexdigest()
+    der = key.public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return hashlib.sha256(der).hexdigest()
 
 
 def _dev_key_digest() -> str | None:
@@ -1860,6 +1871,15 @@ class ServerConfig:
     )
     mcp_public_key_pem: str | None = None
     mcp_subjects: frozenset[tuple[uuid.UUID, uuid.UUID]] | None = None
+    # TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM: a second main-issuer key during a signing-key rollover.
+    next_public_key_pem: str | None = None
+
+    @property
+    def main_public_key_pems(self) -> tuple[str, ...]:
+        return (
+            self.public_key_pem,
+            *((self.next_public_key_pem,) if self.next_public_key_pem else ()),
+        )
 
 
 def server_config(env: Mapping[str, str] | None = None) -> ServerConfig:
@@ -1888,6 +1908,7 @@ def server_config(env: Mapping[str, str] | None = None) -> ServerConfig:
             f"TASKS_API_JWT_MAX_LIFETIME_SECONDS must be between 1 and {HARD_MAX_LIFETIME_SECONDS}"
         )
     mcp_issuer, mcp_pem = _mcp_trust(env, hosted, issuer, pem)
+    next_pem = _next_key(env, hosted, pem, mcp_pem)
     # Ignored while MCP trust is off, so unsetting the key alone always cuts MCP off.
     mcp_subjects = _mcp_subjects(env.get("TASKS_API_MCP_SUBJECTS")) if mcp_pem else None
     return ServerConfig(
@@ -1899,7 +1920,28 @@ def server_config(env: Mapping[str, str] | None = None) -> ServerConfig:
         mcp_issuer,
         mcp_pem,
         mcp_subjects,
+        next_pem,
     )
+
+
+def _next_key(
+    env: Mapping[str, str], hosted: bool, pem: str, mcp_pem: str | None
+) -> str | None:
+    """The rollover key verifies main-issuer tokens next to the current key; unset = off."""
+    next_pem = env.get("TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM", "").strip()
+    if not next_pem:
+        return None
+    if _pem_digest(next_pem) == _pem_digest(pem):
+        raise SystemExit(
+            "TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM must differ from the current key"
+        )
+    if mcp_pem and _pem_digest(next_pem) == _pem_digest(mcp_pem):
+        raise SystemExit(
+            "TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM must differ from the MCP key"
+        )
+    if hosted and _pem_digest(next_pem) == _dev_key_digest():
+        raise SystemExit("hosted mode refuses the dev public key as the next key")
+    return next_pem
 
 
 def _mcp_subjects(raw: str | None) -> frozenset[tuple[uuid.UUID, uuid.UUID]] | None:
@@ -1953,13 +1995,14 @@ def main() -> None:
         mcp_issuer=config.mcp_issuer,
         mcp_public_key_pem=config.mcp_public_key_pem,
         mcp_subjects=config.mcp_subjects,
+        extra_public_key_pems=config.main_public_key_pems[1:],
     )
     cluster = default_cluster()
     app = create_app(lambda: cluster.connect("tasks_api"), verifier)
     # Cells may verify tokens against this JWK Set instead of a pinned PEM (platform-identity step 1).
     from empire_platform import jwks
 
-    jwks.register(app, config.public_key_pem)
+    jwks.register(app, *config.main_public_key_pems)
     # Decentralized cells (own database) reach the platform and graph over HTTP through this process.
     # Runs as tasks_api: it holds only the platform and graph entry points (authorize, cell executions,
     # audit, graph.ingest_cell_event), never platform or graph table grants.
@@ -1978,12 +2021,14 @@ def main() -> None:
             config.issuer,
             audience="platform-api",
             max_lifetime=config.max_lifetime,
+            extra_public_key_pems=config.main_public_key_pems[1:],
         ),
         graph_verifier=TokenVerifier(
             config.public_key_pem,
             config.issuer,
             audience="graph-api",
             max_lifetime=config.max_lifetime,
+            extra_public_key_pems=config.main_public_key_pems[1:],
         ),
         identity_shadow=IdentityShadow(mirror_url) if mirror_url else None,
     )

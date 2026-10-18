@@ -252,9 +252,12 @@ def test_production_tokens(cluster, monkeypatch, tmp_path):
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         claims = jwt.decode(path.read_text(), options={"verify_signature": False})
         short = path.name == "owner-manual.jwt"
-        assert claims["iss"] == "empire-prod" and claims["exp"] - claims["iat"] == (
-            3600 if short else 30 * 86400
-        )
+        lifetime = claims["exp"] - claims["iat"]
+        assert claims["iss"] == "empire-prod"
+        if short:
+            assert lifetime == 3600
+        else:  # bounded by the 30-day delegation it was minted under, never past it
+            assert 30 * 86400 - 300 <= lifetime <= 30 * 86400
     owner = jwt.decode(
         (tokens / "owner-manual.jwt").read_text(), options={"verify_signature": False}
     )
@@ -453,3 +456,88 @@ def test_publisher_health_endpoint_follows_the_loop():
         raise AssertionError("expected 503 after stop")
     except urllib.error.HTTPError as error:
         assert error.code == 503
+
+
+def _rsa_pair() -> tuple[str, str]:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    public = (
+        key.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        .decode()
+    )
+    return private, public
+
+
+def test_rollover_key_verifies_next_to_the_current_key():
+    old_private, old_public = _rsa_pair()
+    new_private, new_public = _rsa_pair()
+    _, stranger_public = _rsa_pair()
+    verifier = TokenVerifier(
+        old_public, "empire-prod", extra_public_key_pems=(new_public,)
+    )
+    for private in (old_private, new_private):
+        token = mint(private, sub=uuid.uuid4(), ws=uuid.uuid4(), issuer="empire-prod")
+        assert verifier.verify(f"Bearer {token}", None).channel == "api"
+    stranger = TokenVerifier(stranger_public, "empire-prod")
+    token = mint(new_private, sub=uuid.uuid4(), ws=uuid.uuid4(), issuer="empire-prod")
+    with pytest.raises(Unauthenticated):
+        stranger.verify(f"Bearer {token}", None)
+    wrong_issuer = mint(
+        new_private, sub=uuid.uuid4(), ws=uuid.uuid4(), issuer="someone-else"
+    )
+    with pytest.raises(Unauthenticated):
+        verifier.verify(f"Bearer {wrong_issuer}", None)
+
+
+def test_next_key_config_is_validated_and_published():
+    current = _rsa_pair()[1].strip()
+    nxt = _rsa_pair()[1].strip()
+    base = {
+        "EMPIRE_DB_MODE": "hosted",
+        "TASKS_API_JWT_PUBLIC_KEY_PEM": current,
+        "TASKS_API_JWT_ISSUER": "empire-prod",
+    }
+    assert server_config(base).main_public_key_pems == (current,)
+    config = server_config({**base, "TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM": nxt})
+    assert config.main_public_key_pems == (current, nxt)
+    with pytest.raises(SystemExit, match="differ from the current key"):
+        server_config({**base, "TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM": current})
+    with pytest.raises(SystemExit, match="dev public key"):
+        server_config({**base, "TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM": key_pair()[1]})
+
+    from empire_platform import jwks
+
+    kids = {k["kid"] for k in jwks.jwk_set(*config.main_public_key_pems)["keys"]}
+    assert kids == {jwks.rsa_jwk(current)["kid"], jwks.rsa_jwk(nxt)["kid"]}
+
+
+def test_key_separation_compares_the_key_not_its_encoding():
+    from cryptography.hazmat.primitives import serialization
+    from tasks_api.app import _pem_digest
+
+    private, spki = _rsa_pair()
+    key = serialization.load_pem_private_key(private.encode(), None).public_key()
+    pkcs1 = key.public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.PKCS1
+    ).decode()
+    assert "RSA PUBLIC KEY" in pkcs1
+    assert _pem_digest(pkcs1) == _pem_digest(spki)
+    base = {
+        "EMPIRE_DB_MODE": "hosted",
+        "TASKS_API_JWT_PUBLIC_KEY_PEM": spki.strip(),
+        "TASKS_API_JWT_ISSUER": "empire-prod",
+    }
+    with pytest.raises(SystemExit, match="differ"):
+        server_config({**base, "TASKS_API_MCP_PUBLIC_KEY_PEM": pkcs1})
+    with pytest.raises(SystemExit, match="differ from the current key"):
+        server_config({**base, "TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM": pkcs1})
