@@ -123,5 +123,5 @@ Hosted run: the `token-rotate` Railway cron service (`empire-token-rotate-hosted
 failing check leaves production on the previous deployment. Roll back by redeploying an earlier
 deployment in Railway. Do not `railway up` it from a working tree; `railway config apply` is
 for service settings only. `tasks-api`, `tasks-publisher` and `recurring-gen` deploy the same way
-(connected 2026-10-18). Only `empire-mcp` is not connected (not deployed; see
-`docs/runbooks/remote-mcp.md`).
+(connected 2026-10-18). The hosted `empire-mcp` Railway service was retired on 2026-10-18 (never
+deployed; the Cloudflare Worker tool hub covers it, see `docs/runbooks/remote-mcp.md`).

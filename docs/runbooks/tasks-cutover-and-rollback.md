@@ -86,8 +86,10 @@ and `~/.config/empire-platform/db.env`, never in the repo.
 |---|---|---|
 | `tasks-api` | `.railway/railway.ts` (healthcheck `/health`) | `EMPIRE_SERVICE=api`, `EMPIRE_DB_MODE=hosted`, `EMPIRE_DB_URL_TASKS_API`, `TASKS_API_JWT_PUBLIC_KEY_PEM`, `TASKS_API_JWT_ISSUER`, `TASKS_API_HOST=0.0.0.0` |
 | `tasks-publisher` | `.railway/railway.ts` (healthcheck `/health`) | `EMPIRE_SERVICE=publisher`, `EMPIRE_DB_MODE=hosted`, `EMPIRE_DB_URL_TASKS_PUBLISHER`, `EMPIRE_DB_URL_GRAPH_API`, optional `PUBLISH_INTERVAL` (seconds, default 5) |
-| `empire-mcp` | `.railway/railway.ts` (healthcheck `/health`) | `EMPIRE_SERVICE=mcp` and the Remote MCP variables in [`remote-mcp.md`](remote-mcp.md); the `tasks-api` service then also needs `TASKS_API_MCP_PUBLIC_KEY_PEM` |
 | `recurring-gen` | `.railway/railway.ts` (cron `15 17 * * *` UTC = 00:15 Asia/Bangkok, no healthcheck, start command `empire-recurring`) | `EMPIRE_SERVICE=recurring`, `EMPIRE_TASKS_API_URL`, `RECURRING_GEN_TOKEN` (the `recurring-gen` automation token: `tasks.task:read`, `tasks.occurrence:write`; rotate with the other automation tokens) |
+| `token-rotate` | `.railway/railway.ts` (cron `30 19 * * 0` UTC, no healthcheck, start command `empire-token-rotate-hosted`) | see the README section *Token rotation* (`EMPIRE_SIGNING_PRIVATE_KEY_PEM`, provider tokens, `MONITOR_URL`, `HEARTBEAT_TOKEN`) |
+
+The hosted `empire-mcp` service was retired on 2026-10-18 (never deployed; see [`remote-mcp.md`](remote-mcp.md)). Every service above is declared with its GitHub source (`main`, Wait for CI), so `railway config apply` keeps CD connected.
 
 - Railway sets `PORT`; the API honors it before `TASKS_API_PORT`.
 - Railway Infrastructure as Code (`.railway/railway.ts`, partial
