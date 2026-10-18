@@ -23,6 +23,8 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from empire_platform._sentry import capture
+
 MAX_BACKOFF_SECONDS = 600
 
 
@@ -49,11 +51,15 @@ def publish(
             " ORDER BY occurred_at, id LIMIT %s FOR UPDATE SKIP LOCKED",
             (batch,),
         ).fetchall()
+        reported = False  # one Sentry event per sweep, not one per failed row
         for row in rows:
             event = json.loads(json.dumps(row, default=str))
             try:
                 deliver(event)
             except Exception as exc:  # noqa: BLE001 - any consumer failure: retry later, never lose the event
+                if not reported:
+                    capture(exc)
+                    reported = True
                 report.failed += 1
                 report.errors.append(f"{row['id']}: {type(exc).__name__}")
                 conn.execute(
@@ -94,6 +100,8 @@ def run_loop(
         try:
             report = step()
         except Exception as exc:  # noqa: BLE001 - transient database or network error: back off, never crash-loop
+            if not errors:  # one Sentry event per failure streak, not one per retry
+                capture(exc)
             errors += 1
             delay = min(max_backoff, max(interval, 1.0) * 2 ** min(errors, 10))
             log(

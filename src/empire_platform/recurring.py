@@ -35,6 +35,8 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from ._sentry import capture
+
 BANGKOK = ZoneInfo("Asia/Bangkok")
 PAGE = 200
 MAX_PREVIEW = 366  # matches the API cap per generate call
@@ -250,6 +252,8 @@ def run(http: Http, until: date, *, dry_run: bool) -> dict[str, int]:
                 {"until": until.isoformat()},
             )
         except ApiError as exc:  # one broken parent never blocks the rest
+            if not counts["errors"]:  # one Sentry event per run, not one per parent
+                capture(exc)
             counts["errors"] += 1
             _log("parent_failed", task=parent["number"], detail=str(exc))
             continue
@@ -306,10 +310,12 @@ def main(argv: list[str] | None = None) -> int:
     until = args.until or datetime.now(BANGKOK).date()
     try:
         counts = run(Http(url, token), until, dry_run=args.dry_run)
-    except RequestError:
+    except RequestError as exc:
+        capture(exc)
         print(json.dumps({"event": "recurring.run", "error": "request_failed"}))
         return 1
     except (ApiError, OSError, urllib.error.URLError) as exc:
+        capture(exc)
         print(
             json.dumps(
                 {
