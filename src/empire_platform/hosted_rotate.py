@@ -49,6 +49,7 @@ VERCEL_API = "https://api.vercel.com"
 CLOUDFLARE_API = "https://api.cloudflare.com/client/v4"
 INFISICAL_API = "https://app.infisical.com"
 PROVIDERS = {"railway", "vercel", "cloudflare", "infisical"}
+PREFLIGHT_PATH = "/empire-platform"
 USER_AGENT = "empire-token-rotate/1 (+https://github.com/bookchaowalit/platform-empire)"
 
 
@@ -285,14 +286,18 @@ class CloudflareApi:
         self.account = account
 
     def verify(self) -> None:
-        response = self.client.get(
+        """Account-owned and user-owned API tokens verify at different endpoints."""
+        for url in (
             f"{CLOUDFLARE_API}/accounts/{self.account}/tokens/verify",
-            headers=self.headers,
-            timeout=30,
-        )
-        response.raise_for_status()
-        if (response.json().get("result") or {}).get("status") != "active":
-            raise RuntimeError("cloudflare token is not active")
+            f"{CLOUDFLARE_API}/user/tokens/verify",
+        ):
+            response = self.client.get(url, headers=self.headers, timeout=30)
+            if (
+                response.is_success
+                and (response.json().get("result") or {}).get("status") == "active"
+            ):
+                return
+        raise RuntimeError("cloudflare token is not active")
 
     def put_secret(self, worker: str, name: str, value: str) -> None:
         response = self.client.put(
@@ -338,16 +343,13 @@ class InfisicalApi:
         return cls(client, response.json()["accessToken"], project, env)
 
     def verify(self) -> None:
-        self.client.get(
-            f"{INFISICAL_API}/api/v3/secrets/raw",
-            params={
-                "workspaceId": self.project,
-                "environment": self.env,
-                "secretPath": "/empire-platform",
-            },
-            headers=self.headers,
-            timeout=30,
-        ).raise_for_status()
+        """Prove write access with a harmless canary secret: a read-only token must fail here,
+        before any delegation is renewed."""
+        self.upsert(
+            PREFLIGHT_PATH,
+            "ROTATE_PREFLIGHT_AT",
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
 
     def upsert(self, path: str, name: str, value: str) -> None:
         body = {

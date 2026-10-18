@@ -45,6 +45,7 @@ class Recorder:
         self.deployed = deployed
         self.vercel_state = "READY"
         self.vercel_auth = True
+        self.cloudflare_user_token = False
         self.infisical_auth = True
         self.vercel_failed: list = []
         self.calls: list[tuple[str, str, dict]] = []
@@ -73,9 +74,13 @@ class Recorder:
         if "vercel" in url and url.endswith("/v2/user"):
             return httpx.Response(200 if self.vercel_auth else 403, json={})
         if "cloudflare" in url and "/tokens/verify" in url:
-            return httpx.Response(200, json={"result": {"status": "active"}})
-        if "infisical" in url and request.method == "GET":
-            return httpx.Response(200 if self.infisical_auth else 401, json={})
+            ok = ("/user/" in url) == self.cloudflare_user_token
+            return httpx.Response(
+                200 if ok else 401,
+                json={"result": {"status": "active"} if ok else None},
+            )
+        if "infisical" in url and "ROTATE_PREFLIGHT_AT" in url:
+            return httpx.Response(200 if self.infisical_auth else 403, json={})
         if "vercel" in url and request.method == "POST" and "/v13/deployments" in url:
             return httpx.Response(200, json={"id": "dpl1"})
         if "vercel" in url and "/v13/deployments/dpl1" in url:
@@ -342,3 +347,19 @@ def test_preflight_drops_providers_whose_credentials_fail(capsys):
     assert failures == 3
     out = capsys.readouterr().out
     assert '"action": "preflight"' in out
+
+
+def test_preflight_accepts_a_user_owned_cloudflare_token():
+    recorder = Recorder(None)
+    recorder.cloudflare_user_token = True
+    apis, _ = _apis(recorder)
+    hr.preflight(apis)
+    assert apis.cloudflare is not None
+
+
+def test_a_read_only_infisical_token_fails_preflight():
+    recorder = Recorder(None)
+    recorder.infisical_auth = False  # the canary write is refused, as for a Viewer
+    apis, _ = _apis(recorder)
+    hr.preflight(apis)
+    assert apis.infisical is None
