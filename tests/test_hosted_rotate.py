@@ -71,7 +71,7 @@ class Recorder:
             return httpx.Response(
                 200, json={"deployments": [{"uid": "d1", "name": "owner-web"}]}
             )
-        if "vercel" in url and url.endswith("/v2/user"):
+        if "vercel" in url and "/v9/projects/" in url:
             return httpx.Response(200 if self.vercel_auth else 403, json={})
         if "cloudflare" in url and "/tokens/verify" in url:
             ok = ("/user/" in url) == self.cloudflare_user_token
@@ -332,7 +332,7 @@ def test_preflight_drops_providers_whose_credentials_fail(capsys):
     recorder.infisical_auth = False
     apis, _ = _apis(recorder)
     apis.infisical = hr.InfisicalApi(apis.railway.client, "expired", "proj", "dev")
-    hr.preflight(apis)
+    hr.preflight(apis, TARGETS)
     assert apis.vercel is None and apis.infisical is None
     assert apis.railway is not None and apis.cloudflare is not None
     minted: list[list[str]] = []
@@ -367,8 +367,17 @@ def test_a_read_only_infisical_token_fails_preflight():
 
 def test_a_dry_run_writes_nothing(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(hr, "preflight", lambda apis: calls.append("preflight"))
+    monkeypatch.setattr(hr, "preflight", lambda *a: calls.append("preflight"))
     monkeypatch.setattr(hr, "load_hosted_targets", lambda: ([], 10))
     env = {"EMPIRE_SIGNING_PRIVATE_KEY_PEM": "k", "EMPIRE_ROTATE_DRY_RUN": "1"}
     assert hr.main(env) == 0
     assert calls == []
+
+
+def test_vercel_preflight_reads_the_configured_projects():
+    recorder = Recorder(None)
+    apis, _ = _apis(recorder)
+    hr.preflight(apis, TARGETS)
+    assert apis.vercel is not None
+    assert any("/v9/projects/owner-web" in u for _, u, _ in recorder.calls)
+    assert not any(u.endswith("/v2/user") for _, u, _ in recorder.calls)

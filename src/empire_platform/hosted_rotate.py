@@ -190,10 +190,15 @@ class VercelApi:
         self.headers = {"Authorization": f"Bearer {token}"}
         self.params = {"teamId": team} if team else {}
 
-    def verify(self) -> None:
-        self.client.get(
-            f"{VERCEL_API}/v2/user", headers=self.headers, timeout=30
-        ).raise_for_status()
+    def verify(self, projects: tuple[str, ...] = ()) -> None:
+        """Read each configured project: project-scoped tokens cannot read user resources."""
+        for project in projects:
+            self.client.get(
+                f"{VERCEL_API}/v9/projects/{project}",
+                params=self.params,
+                headers=self.headers,
+                timeout=30,
+            ).raise_for_status()
 
     def upsert(self, project: str, name: str, value: str) -> None:
         response = self.client.post(
@@ -376,7 +381,7 @@ class Apis:
     infisical: InfisicalApi | None = None
 
 
-def preflight(apis: Apis) -> None:
+def preflight(apis: Apis, targets: list[HostedTarget] | None = None) -> None:
     """Check every configured provider's credentials before anything is minted; a provider
     that fails is dropped, so the automations it serves are skipped, not revoked."""
     for provider in sorted(PROVIDERS):
@@ -384,7 +389,20 @@ def preflight(apis: Apis) -> None:
         if api is None:
             continue
         try:
-            api.verify()
+            if provider == "vercel":
+                api.verify(
+                    tuple(
+                        sorted(
+                            {
+                                t.project
+                                for t in targets or []
+                                if t.provider == "vercel" and t.project
+                            }
+                        )
+                    )
+                )
+            else:
+                api.verify()
         except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
             setattr(apis, provider, None)
             emit(
@@ -672,7 +690,7 @@ def main(env: Mapping[str, str] | None = None) -> int:
             if (
                 not dry_run
             ):  # the Infisical check writes a canary; a dry run changes nothing
-                preflight(apis)
+                preflight(apis, targets)
             due = due_hosted(
                 targets,
                 apis,
