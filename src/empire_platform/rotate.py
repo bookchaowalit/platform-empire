@@ -35,6 +35,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOYMENTS = REPO_ROOT / "contracts" / "automations" / "v1" / "deployments.json"
 DAY = 86400
+HOSTED_ONLY = frozenset({"cloudflare", "infisical"})
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
@@ -50,6 +51,10 @@ class Target:
 
 def load_targets(path: Path = DEPLOYMENTS) -> tuple[list[Target], int]:
     data = json.loads(path.read_text(encoding="utf-8"))
+    for t in data["targets"]:
+        if t["provider"] not in {"railway", "vercel", *HOSTED_ONLY}:
+            raise ValueError(f"unknown provider {t['provider']!r}")
+    # Cloudflare and Infisical copies are pushed only by the hosted rotation (hosted_rotate).
     targets = [
         Target(
             automation=t["automation"],
@@ -59,10 +64,9 @@ def load_targets(path: Path = DEPLOYMENTS) -> tuple[list[Target], int]:
             service=t.get("service"),
         )
         for t in data["targets"]
+        if t["provider"] not in HOSTED_ONLY
     ]
     for target in targets:
-        if target.provider not in {"railway", "vercel"}:
-            raise ValueError(f"unknown provider {target.provider!r}")
         if target.provider == "railway" and not target.service:
             raise ValueError(f"railway target for {target.automation} needs a service")
     return targets, int(data.get("rotate_within_days", 10))
