@@ -31,7 +31,9 @@ from empire_platform.devdb import (
 )
 
 REGISTRY = REPO_ROOT / "contracts" / "automations" / "v1" / "automations.json"
-RENEW_BEFORE = timedelta(days=10)  # = rotate_within_days: a due token always renews a closing delegation
+RENEW_BEFORE = timedelta(
+    days=10
+)  # = rotate_within_days: a due token always renews a closing delegation
 OWNER_TOKEN_MAX_TTL = 3600  # an owner token has no delegation, so nothing can revoke it
 
 

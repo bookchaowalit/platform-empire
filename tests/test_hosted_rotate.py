@@ -276,14 +276,15 @@ def test_a_failed_infisical_login_fails_only_the_infisical_copies(capsys):
         client,
     )
     assert apis.infisical is None and apis.cloudflare is not None
-    failures = hr.run(
-        TARGETS[2:],
-        {"owner-mcp": "forced"},
-        lambda n: dict.fromkeys(n, "a.b.c"),
-        apis,
-        False,
-    )
-    assert failures == 1
+    minted: list[list[str]] = []
+
+    def mint(names):
+        minted.append(names)
+        return dict.fromkeys(names, "a.b.c")
+
+    failures = hr.run(TARGETS[2:], {"owner-mcp": "forced"}, mint, apis, False)
+    # owner-mcp has an Infisical copy: it is not re-minted (that would revoke the live token).
+    assert minted == [] and failures == 2
     out = capsys.readouterr().out
     assert '"provider": "infisical"' in out and "HTTP 401" in out
 
@@ -294,3 +295,19 @@ def test_an_access_token_skips_the_login():
     apis = hr.build_apis({"INFISICAL_TOKEN": "t", "INFISICAL_PROJECT_ID": "p"}, client)
     assert apis.infisical is not None
     assert not any("universal-auth" in u for _, u, _ in recorder.calls)
+
+
+def test_only_fully_deliverable_automations_are_minted():
+    recorder = Recorder(_jwt(time.time()))
+    client = httpx.Client(transport=httpx.MockTransport(recorder))
+    apis = hr.build_apis({"RAILWAY_API_TOKEN": "r"}, client)
+    minted: list[list[str]] = []
+
+    def mint(names):
+        minted.append(names)
+        return dict.fromkeys(names, "a.b.c")
+
+    due = {"goals-publisher": "forced", "solo-web": "forced"}
+    failures = hr.run(TARGETS[:2], due, mint, apis, False)
+    assert minted == [["goals-publisher"]]
+    assert failures == 1

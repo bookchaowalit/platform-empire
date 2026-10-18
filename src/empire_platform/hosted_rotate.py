@@ -427,11 +427,34 @@ def run(
                     }
                 )
         return 0
-    tokens = mint(sorted(due))
-    failures = 0
+    # Renewing a delegation revokes the deployed token, so an automation is minted only when
+    # every copy can be delivered; otherwise the old token keeps working and the run fails.
+    unreachable = {
+        t.automation
+        for t in targets
+        if t.automation in due and getattr(apis, t.provider) is None
+    }
+    skipped = 0
+    for target in targets:
+        if target.automation in unreachable:
+            skipped += 1
+            emit(
+                {
+                    "action": "push",
+                    "automation": target.automation,
+                    "target": target.label,
+                    "ok": False,
+                    "error": "skipped: a destination of this automation is unavailable"
+                    if getattr(apis, target.provider) is not None
+                    else f"{target.provider} credentials are not available",
+                }
+            )
+    mintable = sorted(set(due) - unreachable)
+    tokens = mint(mintable) if mintable else {}
+    failures = skipped
     vercel_projects: list[str] = []
     for target in targets:
-        if target.automation not in due:
+        if target.automation not in due or target.automation in unreachable:
             continue
         token = tokens.get(target.automation)
         try:
