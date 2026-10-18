@@ -668,7 +668,11 @@ def main(env: Mapping[str, str] | None = None) -> int:
     with httpx.Client(headers={"User-Agent": USER_AGENT}) as client:
         try:
             apis = build_apis(env, client)
-            preflight(apis)
+            dry_run = env.get("EMPIRE_ROTATE_DRY_RUN") == "1"
+            if (
+                not dry_run
+            ):  # the Infisical check writes a canary; a dry run changes nothing
+                preflight(apis)
             due = due_hosted(
                 targets,
                 apis,
@@ -686,7 +690,7 @@ def main(env: Mapping[str, str] | None = None) -> int:
                     float(env.get("EMPIRE_ROTATE_TTL_DAYS", "30")),
                 ),
                 apis,
-                env.get("EMPIRE_ROTATE_DRY_RUN") == "1",
+                dry_run,
             )
         except (
             httpx.HTTPError,

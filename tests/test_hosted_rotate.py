@@ -363,3 +363,12 @@ def test_a_read_only_infisical_token_fails_preflight():
     apis, _ = _apis(recorder)
     hr.preflight(apis)
     assert apis.infisical is None
+
+
+def test_a_dry_run_writes_nothing(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(hr, "preflight", lambda apis: calls.append("preflight"))
+    monkeypatch.setattr(hr, "load_hosted_targets", lambda: ([], 10))
+    env = {"EMPIRE_SIGNING_PRIVATE_KEY_PEM": "k", "EMPIRE_ROTATE_DRY_RUN": "1"}
+    assert hr.main(env) == 0
+    assert calls == []
