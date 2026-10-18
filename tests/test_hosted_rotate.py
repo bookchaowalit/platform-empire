@@ -44,6 +44,9 @@ class Recorder:
     def __init__(self, deployed: str | None) -> None:
         self.deployed = deployed
         self.vercel_state = "READY"
+        self.vercel_auth = True
+        self.cloudflare_user_token = False
+        self.infisical_auth = True
         self.vercel_failed: list = []
         self.calls: list[tuple[str, str, dict]] = []
 
@@ -68,6 +71,16 @@ class Recorder:
             return httpx.Response(
                 200, json={"deployments": [{"uid": "d1", "name": "owner-web"}]}
             )
+        if "vercel" in url and "/v9/projects/" in url:
+            return httpx.Response(200 if self.vercel_auth else 403, json={})
+        if "cloudflare" in url and "/tokens/verify" in url:
+            ok = ("/user/" in url) == self.cloudflare_user_token
+            return httpx.Response(
+                200 if ok else 401,
+                json={"result": {"status": "active"} if ok else None},
+            )
+        if "infisical" in url and "ROTATE_PREFLIGHT_AT" in url:
+            return httpx.Response(200 if self.infisical_auth else 403, json={})
         if "vercel" in url and request.method == "POST" and "/v13/deployments" in url:
             return httpx.Response(200, json={"id": "dpl1"})
         if "vercel" in url and "/v13/deployments/dpl1" in url:
@@ -256,3 +269,115 @@ def test_tokens_never_outlive_their_delegation():
     assert 8 * 86400 < token_ttl(month, soon) <= 9 * 86400
     assert token_ttl(month, datetime.now(UTC) + timedelta(days=90)) == month
     assert token_ttl(month, datetime.now(UTC) - timedelta(days=1)) == 60
+
+
+def test_a_failed_infisical_login_fails_only_the_infisical_copies(capsys):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "universal-auth/login" in str(request.url):
+            return httpx.Response(401, json={"message": "bad"})
+        return Recorder(None)(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    apis = hr.build_apis(
+        {
+            "CLOUDFLARE_API_TOKEN": "c",
+            "CLOUDFLARE_ACCOUNT_ID": "acct",
+            "INFISICAL_CLIENT_ID": "id",
+            "INFISICAL_CLIENT_SECRET": "secret",
+            "INFISICAL_PROJECT_ID": "proj",
+        },
+        client,
+    )
+    assert apis.infisical is None and apis.cloudflare is not None
+    minted: list[list[str]] = []
+
+    def mint(names):
+        minted.append(names)
+        return dict.fromkeys(names, "a.b.c")
+
+    failures = hr.run(TARGETS[2:], {"owner-mcp": "forced"}, mint, apis, False)
+    # owner-mcp has an Infisical copy: it is not re-minted (that would revoke the live token).
+    assert minted == [] and failures == 2
+    out = capsys.readouterr().out
+    assert '"provider": "infisical"' in out and "HTTP 401" in out
+
+
+def test_an_access_token_skips_the_login():
+    recorder = Recorder(None)
+    client = httpx.Client(transport=httpx.MockTransport(recorder))
+    apis = hr.build_apis({"INFISICAL_TOKEN": "t", "INFISICAL_PROJECT_ID": "p"}, client)
+    assert apis.infisical is not None
+    assert not any("universal-auth" in u for _, u, _ in recorder.calls)
+
+
+def test_only_fully_deliverable_automations_are_minted():
+    recorder = Recorder(_jwt(time.time()))
+    client = httpx.Client(transport=httpx.MockTransport(recorder))
+    apis = hr.build_apis({"RAILWAY_API_TOKEN": "r"}, client)
+    minted: list[list[str]] = []
+
+    def mint(names):
+        minted.append(names)
+        return dict.fromkeys(names, "a.b.c")
+
+    due = {"goals-publisher": "forced", "solo-web": "forced"}
+    failures = hr.run(TARGETS[:2], due, mint, apis, False)
+    assert minted == [["goals-publisher"]]
+    assert failures == 1
+
+
+def test_preflight_drops_providers_whose_credentials_fail(capsys):
+    recorder = Recorder(None)
+    recorder.vercel_auth = False
+    recorder.infisical_auth = False
+    apis, _ = _apis(recorder)
+    apis.infisical = hr.InfisicalApi(apis.railway.client, "expired", "proj", "dev")
+    hr.preflight(apis, TARGETS)
+    assert apis.vercel is None and apis.infisical is None
+    assert apis.railway is not None and apis.cloudflare is not None
+    minted: list[list[str]] = []
+
+    def mint(names):
+        minted.append(names)
+        return dict.fromkeys(names, "a.b.c")
+
+    due = {"goals-publisher": "forced", "solo-web": "forced", "owner-mcp": "forced"}
+    failures = hr.run(TARGETS, due, mint, apis, False)
+    assert minted == [["goals-publisher"]]
+    assert failures == 3
+    out = capsys.readouterr().out
+    assert '"action": "preflight"' in out
+
+
+def test_preflight_accepts_a_user_owned_cloudflare_token():
+    recorder = Recorder(None)
+    recorder.cloudflare_user_token = True
+    apis, _ = _apis(recorder)
+    hr.preflight(apis)
+    assert apis.cloudflare is not None
+
+
+def test_a_read_only_infisical_token_fails_preflight():
+    recorder = Recorder(None)
+    recorder.infisical_auth = False  # the canary write is refused, as for a Viewer
+    apis, _ = _apis(recorder)
+    hr.preflight(apis)
+    assert apis.infisical is None
+
+
+def test_a_dry_run_writes_nothing(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(hr, "preflight", lambda *a: calls.append("preflight"))
+    monkeypatch.setattr(hr, "load_hosted_targets", lambda: ([], 10))
+    env = {"EMPIRE_SIGNING_PRIVATE_KEY_PEM": "k", "EMPIRE_ROTATE_DRY_RUN": "1"}
+    assert hr.main(env) == 0
+    assert calls == []
+
+
+def test_vercel_preflight_reads_the_configured_projects():
+    recorder = Recorder(None)
+    apis, _ = _apis(recorder)
+    hr.preflight(apis, TARGETS)
+    assert apis.vercel is not None
+    assert any("/v9/projects/owner-web" in u for _, u, _ in recorder.calls)
+    assert not any(u.endswith("/v2/user") for _, u, _ in recorder.calls)

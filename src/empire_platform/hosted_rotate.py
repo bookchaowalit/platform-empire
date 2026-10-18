@@ -21,7 +21,8 @@ Environment:
     EMPIRE_ROTATE_WORKSPACE         default ``owner``
     EMPIRE_DB_MODE=hosted, EMPIRE_DB_URL_EMPIRE_MIGRATOR (workspace lookup), EMPIRE_DB_URL_PLATFORM_API
     RAILWAY_API_TOKEN, VERCEL_TOKEN (+ VERCEL_TEAM_ID), CLOUDFLARE_API_TOKEN,
-    CLOUDFLARE_ACCOUNT_ID, INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET,
+    CLOUDFLARE_ACCOUNT_ID, INFISICAL_CLIENT_ID + INFISICAL_CLIENT_SECRET (machine identity)
+    or INFISICAL_TOKEN (an access token),
     INFISICAL_PROJECT_ID, INFISICAL_ENVIRONMENT (default dev)
     MONITOR_URL, HEARTBEAT_TOKEN    optional heartbeat
     EMPIRE_ROTATE_FORCE=1           rotate every target now
@@ -48,6 +49,7 @@ VERCEL_API = "https://api.vercel.com"
 CLOUDFLARE_API = "https://api.cloudflare.com/client/v4"
 INFISICAL_API = "https://app.infisical.com"
 PROVIDERS = {"railway", "vercel", "cloudflare", "infisical"}
+PREFLIGHT_PATH = "/empire-platform"
 USER_AGENT = "empire-token-rotate/1 (+https://github.com/bookchaowalit/platform-empire)"
 
 
@@ -127,15 +129,8 @@ class RailwayApi:
 
     def _ids(self, project: str, service: str) -> tuple[str, str, str]:
         if self._projects is None:
-            data = self._query(
-                "query { projects { edges { node { id name"
-                " environments { edges { node { id name } } }"
-                " services { edges { node { id name } } } } } } }",
-                {},
-            )
-            self._projects = {
-                edge["node"]["name"]: edge["node"] for edge in data["projects"]["edges"]
-            }
+            self._ids_cache_warm()
+        assert self._projects is not None
         node = self._projects.get(project)
         if node is None:
             raise LookupError(f"railway project {project!r} not found")
@@ -148,6 +143,20 @@ class RailwayApi:
         if "production" not in envs or service not in services:
             raise LookupError(f"railway service {project}/{service} not found")
         return node["id"], envs["production"], services[service]
+
+    def verify(self) -> None:
+        self._ids_cache_warm()
+
+    def _ids_cache_warm(self) -> None:
+        data = self._query(
+            "query { projects { edges { node { id name"
+            " environments { edges { node { id name } } }"
+            " services { edges { node { id name } } } } } } }",
+            {},
+        )
+        self._projects = {
+            edge["node"]["name"]: edge["node"] for edge in data["projects"]["edges"]
+        }
 
     def read(self, project: str, service: str, name: str) -> str | None:
         project_id, env_id, service_id = self._ids(project, service)
@@ -180,6 +189,16 @@ class VercelApi:
         self.client = client
         self.headers = {"Authorization": f"Bearer {token}"}
         self.params = {"teamId": team} if team else {}
+
+    def verify(self, projects: tuple[str, ...] = ()) -> None:
+        """Read each configured project: project-scoped tokens cannot read user resources."""
+        for project in projects:
+            self.client.get(
+                f"{VERCEL_API}/v9/projects/{project}",
+                params=self.params,
+                headers=self.headers,
+                timeout=30,
+            ).raise_for_status()
 
     def upsert(self, project: str, name: str, value: str) -> None:
         response = self.client.post(
@@ -271,6 +290,20 @@ class CloudflareApi:
         self.headers = {"Authorization": f"Bearer {token}"}
         self.account = account
 
+    def verify(self) -> None:
+        """Account-owned and user-owned API tokens verify at different endpoints."""
+        for url in (
+            f"{CLOUDFLARE_API}/accounts/{self.account}/tokens/verify",
+            f"{CLOUDFLARE_API}/user/tokens/verify",
+        ):
+            response = self.client.get(url, headers=self.headers, timeout=30)
+            if (
+                response.is_success
+                and (response.json().get("result") or {}).get("status") == "active"
+            ):
+                return
+        raise RuntimeError("cloudflare token is not active")
+
     def put_secret(self, worker: str, name: str, value: str) -> None:
         response = self.client.put(
             f"{CLOUDFLARE_API}/accounts/{self.account}/workers/scripts/{worker}/secrets",
@@ -287,21 +320,41 @@ class InfisicalApi:
     def __init__(
         self,
         client: httpx.Client,
-        client_id: str,
-        client_secret: str,
+        access_token: str,
         project: str,
         env: str,
     ) -> None:
         self.client = client
         self.project = project
         self.env = env
-        login = client.post(
+        self.headers = {"Authorization": f"Bearer {access_token}"}
+
+    @classmethod
+    def login(
+        cls,
+        client: httpx.Client,
+        client_id: str,
+        client_secret: str,
+        project: str,
+        env: str,
+    ) -> InfisicalApi:
+        """Universal Auth machine identity login."""
+        response = client.post(
             f"{INFISICAL_API}/api/v1/auth/universal-auth/login",
             json={"clientId": client_id, "clientSecret": client_secret},
             timeout=30,
         )
-        login.raise_for_status()
-        self.headers = {"Authorization": f"Bearer {login.json()['accessToken']}"}
+        response.raise_for_status()
+        return cls(client, response.json()["accessToken"], project, env)
+
+    def verify(self) -> None:
+        """Prove write access with a harmless canary secret: a read-only token must fail here,
+        before any delegation is renewed."""
+        self.upsert(
+            PREFLIGHT_PATH,
+            "ROTATE_PREFLIGHT_AT",
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
 
     def upsert(self, path: str, name: str, value: str) -> None:
         body = {
@@ -326,6 +379,40 @@ class Apis:
     vercel: VercelApi | None = None
     cloudflare: CloudflareApi | None = None
     infisical: InfisicalApi | None = None
+
+
+def preflight(apis: Apis, targets: list[HostedTarget] | None = None) -> None:
+    """Check every configured provider's credentials before anything is minted; a provider
+    that fails is dropped, so the automations it serves are skipped, not revoked."""
+    for provider in sorted(PROVIDERS):
+        api = getattr(apis, provider)
+        if api is None:
+            continue
+        try:
+            if provider == "vercel":
+                api.verify(
+                    tuple(
+                        sorted(
+                            {
+                                t.project
+                                for t in targets or []
+                                if t.provider == "vercel" and t.project
+                            }
+                        )
+                    )
+                )
+            else:
+                api.verify()
+        except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
+            setattr(apis, provider, None)
+            emit(
+                {
+                    "action": "preflight",
+                    "provider": provider,
+                    "ok": False,
+                    "error": describe_error(exc),
+                }
+            )
 
 
 def due_hosted(
@@ -415,11 +502,34 @@ def run(
                     }
                 )
         return 0
-    tokens = mint(sorted(due))
-    failures = 0
+    # Renewing a delegation revokes the deployed token, so an automation is minted only when
+    # every copy can be delivered; otherwise the old token keeps working and the run fails.
+    unreachable = {
+        t.automation
+        for t in targets
+        if t.automation in due and getattr(apis, t.provider) is None
+    }
+    skipped = 0
+    for target in targets:
+        if target.automation in unreachable:
+            skipped += 1
+            emit(
+                {
+                    "action": "push",
+                    "automation": target.automation,
+                    "target": target.label,
+                    "ok": False,
+                    "error": "skipped: a destination of this automation is unavailable"
+                    if getattr(apis, target.provider) is not None
+                    else f"{target.provider} credentials are not available",
+                }
+            )
+    mintable = sorted(set(due) - unreachable)
+    tokens = mint(mintable) if mintable else {}
+    failures = skipped
     vercel_projects: list[str] = []
     for target in targets:
-        if target.automation not in due:
+        if target.automation not in due or target.automation in unreachable:
             continue
         token = tokens.get(target.automation)
         try:
@@ -474,14 +584,37 @@ def build_apis(env: Mapping[str, str], client: httpx.Client) -> Apis:
         apis.cloudflare = CloudflareApi(
             client, env["CLOUDFLARE_API_TOKEN"], env["CLOUDFLARE_ACCOUNT_ID"]
         )
-    if env.get("INFISICAL_CLIENT_ID") and env.get("INFISICAL_CLIENT_SECRET"):
+    project, environment = (
+        env.get("INFISICAL_PROJECT_ID", ""),
+        env.get("INFISICAL_ENVIRONMENT", "dev"),
+    )
+    if env.get("INFISICAL_TOKEN") and project:
         apis.infisical = InfisicalApi(
-            client,
-            env["INFISICAL_CLIENT_ID"],
-            env["INFISICAL_CLIENT_SECRET"],
-            env["INFISICAL_PROJECT_ID"],
-            env.get("INFISICAL_ENVIRONMENT", "dev"),
+            client, env["INFISICAL_TOKEN"], project, environment
         )
+    elif (
+        env.get("INFISICAL_CLIENT_ID")
+        and env.get("INFISICAL_CLIENT_SECRET")
+        and project
+    ):
+        try:
+            apis.infisical = InfisicalApi.login(
+                client,
+                env["INFISICAL_CLIENT_ID"],
+                env["INFISICAL_CLIENT_SECRET"],
+                project,
+                environment,
+            )
+        except httpx.HTTPError as exc:
+            # Only the Infisical copies fail (counted as push failures); the rest still rotate.
+            emit(
+                {
+                    "action": "login",
+                    "provider": "infisical",
+                    "ok": False,
+                    "error": describe_error(exc),
+                }
+            )
     return apis
 
 
@@ -553,6 +686,11 @@ def main(env: Mapping[str, str] | None = None) -> int:
     with httpx.Client(headers={"User-Agent": USER_AGENT}) as client:
         try:
             apis = build_apis(env, client)
+            dry_run = env.get("EMPIRE_ROTATE_DRY_RUN") == "1"
+            if (
+                not dry_run
+            ):  # the Infisical check writes a canary; a dry run changes nothing
+                preflight(apis, targets)
             due = due_hosted(
                 targets,
                 apis,
@@ -570,7 +708,7 @@ def main(env: Mapping[str, str] | None = None) -> int:
                     float(env.get("EMPIRE_ROTATE_TTL_DAYS", "30")),
                 ),
                 apis,
-                env.get("EMPIRE_ROTATE_DRY_RUN") == "1",
+                dry_run,
             )
         except (
             httpx.HTTPError,
