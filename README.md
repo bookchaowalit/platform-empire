@@ -48,6 +48,10 @@ skipped (exit 1 at the end). Variables (Railway only): `EMPIRE_SERVICE=recurring
 `railway up --ci --service recurring-gen`; check:
 `railway run --service recurring-gen -- empire-recurring --dry-run`.
 
+Railway variables for `tasks-api`, `tasks-publisher` and `recurring-gen` also include
+`SENTRY_DSN` (error reporting; unset = off, see `src/empire_platform/_sentry.py`) and
+`SENTRY_ENVIRONMENT`.
+
 ## Layout
 
 | Path | Contents |
