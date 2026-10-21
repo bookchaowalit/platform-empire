@@ -724,7 +724,7 @@
       "writers": [
         "bookchaowalit/life-checkin-worker:src/worker.ts"
       ],
-      "does": "the 21:30 Telegram check-in (Cloudflare Worker solo-empire-checkin): writes the owner's reply as health metrics, time logs and a daily journal entry; no update, delete or other cells",
+      "does": "the 21:30 Telegram check-in (Cloudflare Worker solo-empire-checkin): writes the owner's reply as health metrics, time logs and a daily journal entry; no update, delete or other cells; the :read scopes are needed only so an idempotent replay of a create (Telegram retry) returns the stored record instead of 403",
       "scopes": [
         "diary.journal-entry:read",
         "diary.journal-entry:write",
