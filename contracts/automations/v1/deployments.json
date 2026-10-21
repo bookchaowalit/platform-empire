@@ -20,6 +20,7 @@
     {"automation": "recurring-gen", "provider": "railway", "checkout": "platform-empire", "service": "recurring-gen", "variable": "RECURRING_GEN_TOKEN"},
     {"automation": "solo-web", "provider": "vercel", "checkout": "life-dashboard-web", "variable": "EMPIRE_CELL_TOKEN", "vercel_project": "owner-web"},
     {"automation": "accounts-web", "provider": "vercel", "checkout": "platform-accounts-api/web", "variable": "ACCOUNTS_API_TOKEN", "vercel_project": "accounts-web"},
+    {"automation": "evening-checkin", "provider": "cloudflare", "worker": "solo-empire-checkin", "variable": "EMPIRE_CHECKIN_TOKEN"},
     {"automation": "owner-mcp", "provider": "cloudflare", "worker": "solo-empire-mcp-remote", "variable": "EMPIRE_OWNER_MCP_TOKEN"},
     {"automation": "owner-mcp", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_OWNER_MCP"},
     {"automation": "owner-cli", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_OWNER_CLI"}

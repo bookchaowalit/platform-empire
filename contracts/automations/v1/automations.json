@@ -720,6 +720,21 @@
       ]
     },
     {
+      "id": "evening-checkin",
+      "writers": [
+        "bookchaowalit/life-checkin-worker:src/worker.ts"
+      ],
+      "does": "the 21:30 Telegram check-in (Cloudflare Worker solo-empire-checkin): writes the owner's reply as health metrics, time logs and a daily journal entry; no update, delete or other cells",
+      "scopes": [
+        "diary.journal-entry:read",
+        "diary.journal-entry:write",
+        "health.health-metric:read",
+        "health.health-metric:write",
+        "time.time-log:read",
+        "time.time-log:write"
+      ]
+    },
+    {
       "id": "strava-sync",
       "writers": [
         "infra/scripts/sync/sync_strava.py"
