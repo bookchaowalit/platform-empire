@@ -31,6 +31,7 @@ empire-monitor = "empire_platform.monitor:main"
 empire-neon = "empire_platform.neon:main"
 empire-cells = "empire_platform.cells:main"
 empire-recurring = "empire_platform.recurring:main"
+empire-backlog-sync = "empire_platform.backlog_sync:main"
 
 [build-system]
 requires = ["setuptools>=69"]

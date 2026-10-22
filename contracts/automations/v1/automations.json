@@ -1144,6 +1144,18 @@
         "transactions.transaction:read",
         "transactions.transaction:write"
       ]
+    },
+    {
+      "id": "backlog-sync",
+      "writers": [
+        "src/empire_platform/backlog_sync.py"
+      ],
+      "does": "upserts one task per GitHub issue (label autopilot or backlog), Sentry error issue, outcome-review action and incident action by external key; archives issues closed as not planned (D2, 2026-10-23)",
+      "scopes": [
+        "tasks.archive:write",
+        "tasks.task:read",
+        "tasks.task:write"
+      ]
     }
   ],
   "not_automations": []

@@ -52,6 +52,21 @@ Railway variables for `tasks-api`, `tasks-publisher` and `recurring-gen` also in
 `SENTRY_DSN` (error reporting; unset = off, see `src/empire_platform/_sentry.py`) and
 `SENTRY_ENVIRONMENT`.
 
+## Backlog sync
+
+`empire-backlog-sync [--dry-run] [--sources github,sentry,files]`
+(`src/empire_platform/backlog_sync.py`) feeds the single backlog (owner decision D2,
+2026-10-23): GitHub issues labelled `autopilot` or `backlog`, unresolved error/fatal
+Sentry issues in `personal-yu0`, and the action rows of decided outcome reviews and of
+incident reviews become one task each through
+`PUT /v1/tasks/external/<source>/<key>` (keys and labels from architecture-docs
+`docs/lifecycle/OUTCOME-REVIEW-TO-BACKLOG.md`). It reads each task first and writes
+only sync-owned fields that differ (title, link, labels, project, GitHub state), so a
+re-run writes nothing; priority and due date are set only on create. It runs as the
+`backlog-sync` automation (`tasks.task:read`, `tasks.task:write`,
+`tasks.archive:write`). Host, schedule and setup: [runbook](docs/runbooks/backlog-sync.md)
+and architecture-docs ADR-0006.
+
 ## Layout
 
 | Path | Contents |
