@@ -6,6 +6,7 @@ import threading
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from test_tasks_api import client, create, keys, superuser, token, world  # noqa: F401  (fixtures)
 
 
@@ -79,6 +80,32 @@ def test_same_external_key_in_another_workspace_is_separate(client, token, world
     ).json()
     assert alpha["outcome"] == beta["outcome"] == "created"
     assert alpha["task"]["id"] != beta["task"]["id"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "{repo}%2342",  # the slash as-is, the '#' encoded (the policy's form)
+        "{repo_encoded}%2342",  # every reserved character encoded
+    ],
+)
+def test_github_issue_key_with_slash_and_hash_upserts_one_task(
+    client, token, world, path
+):
+    """Policy key ``github/<owner>/<repo>#<n>`` (TASK-SOURCE-OF-TRUTH rule 2)."""
+    owner = token(world.owner, world.alpha)
+    repo = f"bookchaowalit/repo-{uuid.uuid4().hex[:6]}"
+    url = "/v1/tasks/external/github/" + path.format(
+        repo=repo, repo_encoded=repo.replace("/", "%2F")
+    )
+    first = client.put(url, json={"title": "Issue 42"}, headers=owner)
+    retry = client.put(url, json={"title": "Issue 42"}, headers=owner)
+    assert (first.status_code, first.json()["outcome"]) == (201, "created")
+    assert retry.json()["outcome"] == "unchanged"
+    assert first.json()["task"]["external_id"] == f"{repo}#42"
+    found = client.get(url, headers=owner)
+    assert found.status_code == 200
+    assert found.json()["id"] == first.json()["task"]["id"]
 
 
 def test_reminder_delivery_is_recorded_once(client, token, world, cluster):

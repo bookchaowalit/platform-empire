@@ -864,7 +864,7 @@ def create_app(
         return to_task(row)
 
     @app.get(
-        "/v1/tasks/external/{source}/{external_id}",
+        "/v1/tasks/external/{source}/{external_id:path}",
         response_model=Task,
         responses={401: {"model": Problem}, 404: {"model": Problem}},
     )
@@ -1182,7 +1182,7 @@ def create_app(
         )
 
     @app.put(
-        "/v1/tasks/external/{source}/{external_id}",
+        "/v1/tasks/external/{source}/{external_id:path}",
         response_model=UpsertResult,
         responses={
             401: {"model": Problem},
