@@ -194,9 +194,8 @@ def test_synthetic_dump_restore_preserves_data_security_and_delivery(
             )
         )
         restored_read = recovered.get(f"/v1/tasks/{task['id']}", headers=owner)
-        assert (
-            restored_read.status_code == 200 and restored_read.json()["priority"] == 2
-        )
+        assert restored_read.status_code == 200
+        assert restored_read.json()["priority"] == 2
         outsider = bearer(gtoken(gworld.outsider, gworld.beta))
         outsider_read = recovered.get(f"/v1/tasks/{task['id']}", headers=outsider)
         assert outsider_read.status_code == 404
@@ -245,7 +244,8 @@ def test_synthetic_dump_restore_preserves_data_security_and_delivery(
         report = publish(
             lambda: cluster.connect("tasks_publisher", dbname), consumer, batch=1000
         )
-        assert report.failed == 0 and report.delivered >= 1
+        assert report.failed == 0
+        assert report.delivered >= 1
         with cluster.connect("postgres", dbname, row_factory=dict_row) as conn:
             event = conn.execute(
                 "SELECT * FROM tasks.outbox WHERE subject=%s ORDER BY occurred_at DESC LIMIT 1",

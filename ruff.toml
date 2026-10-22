@@ -1,4 +1,16 @@
+target-version = "py312"
+# Local setuptools build output, never tracked.
+extend-exclude = ["build"]
+
 [lint]
+# Same rule set as the cell APIs (Wave 2, 2026-10-22).
+select = [
+    "E", "W", "F", "I", "B", "BLE", "UP", "C4", "SIM", "RUF", "PIE", "PT", "RET", "ISC",
+    "PERF", "LOG", "G", "FURB",
+]
+# ruff format wraps code at 88; what stays longer are noqa/pragma justifications, which
+# must sit on the flagged line.
+ignore = ["E501"]
 # FastAPI dependency injection idiom (`caller = Depends(principal)`), not a call evaluated per use.
 flake8-bugbear.extend-immutable-calls = ["fastapi.Depends"]
 

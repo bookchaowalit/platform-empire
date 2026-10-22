@@ -204,4 +204,5 @@ def test_one_correlation_id_links_mcp_api_outbox_and_graph(
     )
     assert len(row) == 1
     execution, outbox, graph = row[0]
-    assert execution.startswith("mcp-") and execution == outbox == graph
+    assert execution.startswith("mcp-")
+    assert execution == outbox == graph

@@ -127,7 +127,9 @@ def _sqlite_time(value: datetime | None) -> str | None:
 
 
 def _row_values(task: dict[str, Any], ids: dict[str, int]) -> dict[str, Any]:
-    parent = lambda key: ids.get(str(task[key])) if task[key] else None
+    def parent(key):
+        return ids.get(str(task[key])) if task[key] else None
+
     return {
         "title": task["title"],
         "description": task["description"],

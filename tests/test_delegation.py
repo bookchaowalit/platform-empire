@@ -27,7 +27,9 @@ def workspace(api):
 
 
 def test_delegation_cannot_exceed_the_grantor(api, workspace):
-    with pytest.raises(psycopg.errors.InsufficientPrivilege, match="tasks.task:delete"):
+    with pytest.raises(
+        psycopg.errors.InsufficientPrivilege, match=r"tasks\.task:delete"
+    ):
         delegate(
             api, workspace, workspace.owner, workspace.members["coach"], [READ, DELETE]
         )

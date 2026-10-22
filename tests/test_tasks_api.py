@@ -149,9 +149,8 @@ def test_owner_lifecycle_with_outbox_and_audit(client, token, world, cluster):
         json={"status": "in_progress"},
         headers={**owner, "If-Match": str(task["version"])},
     )
-    assert (
-        updated.status_code == 200 and updated.json()["version"] == task["version"] + 1
-    )
+    assert updated.status_code == 200
+    assert updated.json()["version"] == task["version"] + 1
     stale = client.patch(
         f"/v1/tasks/{task['id']}",
         json={"priority": 1},
@@ -160,7 +159,8 @@ def test_owner_lifecycle_with_outbox_and_audit(client, token, world, cluster):
     assert stale.status_code == 412
 
     done = client.post(f"/v1/tasks/{task['id']}/complete", headers=owner).json()
-    assert done["status"] == "done" and done["completed_at"] is not None
+    assert done["status"] == "done"
+    assert done["completed_at"] is not None
     link = client.post(
         f"/v1/tasks/{task['id']}/links",
         headers=owner,
@@ -202,10 +202,8 @@ def test_delete_needs_an_approval(client, token, world):
     owner = token(world.owner, world.alpha)
     task = create(client, owner, title="Old plan")
     blocked = client.delete(f"/v1/tasks/{task['id']}", headers=owner)
-    assert (
-        blocked.status_code == 409
-        and blocked.json()["detail"]["reason"] == "approval_required"
-    )
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["reason"] == "approval_required"
     approved = client.delete(
         f"/v1/tasks/{task['id']}",
         headers={**owner, "X-Empire-Approval": str(world.delete_approved)},
@@ -387,10 +385,8 @@ def test_read_only_member_cannot_write(client, token, world):
     denied = client.patch(
         f"/v1/tasks/{task['id']}", json={"priority": 1}, headers=partner
     )
-    assert (
-        denied.status_code == 403
-        and denied.json()["detail"]["reason"] == "no_permission"
-    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["reason"] == "no_permission"
     assert (
         client.post("/v1/tasks", json={"title": "x"}, headers=partner).status_code
         == 403
@@ -412,10 +408,8 @@ def test_agent_with_read_delegation(client, token, world):
     assert client.get(f"/v1/tasks/{task['id']}", headers=coach).status_code == 200
     assert client.get("/v1/tasks", headers=coach).status_code == 200
     denied = client.post("/v1/tasks", json={"title": "Run 20 km"}, headers=coach)
-    assert (
-        denied.status_code == 403
-        and denied.json()["detail"]["reason"] == "no_permission"
-    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["reason"] == "no_permission"
 
 
 def test_agent_write_is_attributed_to_the_delegation(client, token, world, cluster):
@@ -457,10 +451,8 @@ def test_revoked_delegation_is_denied_and_recorded(client, token, world, cluster
         world.coach, world.alpha, delegation=world.coach_revoked, obo=world.owner
     )
     response = client.post("/v1/tasks", json={"title": "x"}, headers=coach)
-    assert (
-        response.status_code == 403
-        and response.json()["detail"]["reason"] == "delegation_invalid"
-    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["reason"] == "delegation_invalid"
     recorded = superuser(
         cluster,
         "SELECT count(*) FROM platform.authorization_decisions WHERE delegation_id = %s AND reason = 'delegation_invalid'",
@@ -474,10 +466,8 @@ def test_agent_cannot_claim_to_act_for_someone_else(client, token, world):
         world.coach, world.alpha, delegation=world.coach_write, obo=world.partner
     )
     response = client.post("/v1/tasks", json={"title": "x"}, headers=coach)
-    assert (
-        response.status_code == 403
-        and response.json()["detail"]["reason"] == "delegation_invalid"
-    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["reason"] == "delegation_invalid"
 
 
 # --- cross-workspace ----------------------------------------------------------------
@@ -709,10 +699,8 @@ def test_grantor_losing_permission_after_precheck_is_enforced(
         headers=token(agent, ws.id, delegation=delegation, obo=ws.owner),
     )
     assert state["done"]
-    assert (
-        response.status_code == 403
-        and response.json()["detail"]["reason"] == "no_permission"
-    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["reason"] == "no_permission"
     assert (
         superuser(
             cluster, "SELECT count(*) FROM tasks.tasks WHERE title = 'Raced by grantor'"
@@ -738,10 +726,8 @@ def test_delegation_revoked_after_precheck_is_refused(
         headers=token(agent, ws.id, delegation=delegation, obo=ws.owner),
     )
     assert state["done"]
-    assert (
-        response.status_code == 403
-        and response.json()["detail"]["reason"] == "delegation_invalid"
-    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["reason"] == "delegation_invalid"
     assert (
         superuser(
             cluster,

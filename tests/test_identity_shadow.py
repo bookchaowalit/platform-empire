@@ -151,7 +151,8 @@ def test_mirror_logs_a_match_without_token_or_resource(caplog):
         )
     assert seen == {"auth": "Bearer tok", "channel": "mcp"}
     assert "outcome=match action=a.b:read" in caplog.text
-    assert "tok" not in caplog.text and "secret-id" not in caplog.text
+    assert "tok" not in caplog.text
+    assert "secret-id" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -186,7 +187,8 @@ def test_mirror_failure_never_raises(caplog):
 
 
 def test_shadow_url_requires_https():
-    assert shadow_url(None) is None and shadow_url(" ") is None
+    assert shadow_url(None) is None
+    assert shadow_url(" ") is None
     assert (
         shadow_url("https://identity.example/")
         == "https://identity.example/v1/authz/decide"
@@ -408,4 +410,5 @@ def test_google_login_exchanges_for_a_member_of_the_workspace(
     refused = identity.post(
         "/v1/token", data={**form, "workspace": str(world.other_ws)}
     )
-    assert refused.status_code == 400 and refused.json()["error"] == "invalid_grant"
+    assert refused.status_code == 400
+    assert refused.json()["error"] == "invalid_grant"

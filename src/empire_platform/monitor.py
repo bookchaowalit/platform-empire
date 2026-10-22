@@ -215,16 +215,16 @@ def evaluate(
                         workspace,
                     )
                 )
-    for workspace in (previous or {}).get("workspaces", {}):
-        if workspace not in current["workspaces"]:
-            findings.append(
-                Finding(
-                    "workspace_missing",
-                    "breach",
-                    "workspace present in the last run is gone",
-                    workspace,
-                )
-            )
+    findings.extend(
+        Finding(
+            "workspace_missing",
+            "breach",
+            "workspace present in the last run is gone",
+            workspace,
+        )
+        for workspace in (previous or {}).get("workspaces", {})
+        if workspace not in current["workspaces"]
+    )
 
     age = timedelta(seconds=current["outbox"]["oldest_age_seconds"])
     if age > OUTBOX_BREACH:

@@ -139,7 +139,8 @@ def test_agent_sees_only_what_its_delegation_allows(cluster, apps, gworld, gtoke
         gworld.coach, gworld.ws, delegation=gworld.coach_read, obo=gworld.owner
     )
     seen = {urn for urn, _, _ in neighbors(graph, with_goals, gworld.goal)}
-    assert seen and all(":tasks:" in urn for urn in seen)
+    assert seen
+    assert all(":tasks:" in urn for urn in seen)
     assert neighbors(graph, tasks_only, gworld.goal) == []  # cannot see the goal itself
     no_delegation = gtoken(gworld.coach, gworld.ws)
     assert neighbors(graph, no_delegation, gworld.goal) == []
@@ -173,7 +174,8 @@ def test_graph_outage_does_not_stop_tasks_and_catch_up_is_exact(
         for i in range(3)
     ]
     down = run_publisher(cluster, graph_down)
-    assert down.delivered == 0 and down.failed >= 6
+    assert down.delivered == 0
+    assert down.failed >= 6
     retrying = superuser(
         cluster,
         "SELECT count(*) FROM tasks.outbox WHERE published_at IS NULL AND attempts >= 1"
@@ -188,7 +190,8 @@ def test_graph_outage_does_not_stop_tasks_and_catch_up_is_exact(
 
     due_now(cluster)
     up = run_publisher(cluster)
-    assert up.failed == 0 and up.delivered >= 6
+    assert up.failed == 0
+    assert up.delivered >= 6
     due_now(cluster)
     again = run_publisher(cluster)
     assert again.delivered == 0  # nothing left

@@ -101,7 +101,8 @@ def test_outbox_api_and_switch_signals():
         evaluate(snap, None, True, None, now)[0]
     )
     first, since = evaluate(base(), None, False, None, now)
-    assert ("api_down", "warn") in checks(first) and since
+    assert ("api_down", "warn") in checks(first)
+    assert since
     later, _ = evaluate(
         base(), None, False, (now - timedelta(minutes=31)).isoformat(), now
     )
@@ -217,7 +218,8 @@ def test_token_expiry_reads_only_exp_and_skips_short_lived(tmp_path):
     unreadable = {"broken", "infinite", "far", "text"}
     assert set(expiries) == {"fresh", "soon"} | unreadable
     assert all(expiries[name] is None for name in unreadable)
-    assert isinstance(expiries["fresh"], int) and isinstance(expiries["soon"], int)
+    assert isinstance(expiries["fresh"], int)
+    assert isinstance(expiries["soon"], int)
     assert token_expiries(tmp_path / "missing") == {}
     assert token_expiries(None) == {}
 

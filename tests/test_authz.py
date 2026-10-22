@@ -96,9 +96,9 @@ def request_from(
         action=spec["action"],
         resource=Resource("task", "*", names[spec["resource_workspace"]]),
         channel=channel,
-        delegation=names.get(spec.get("delegation", ""), None),
-        on_behalf_of=names.get(spec.get("on_behalf_of", ""), None),
-        approval=names.get(spec.get("approval", ""), None),
+        delegation=names.get(spec.get("delegation", "")),
+        on_behalf_of=names.get(spec.get("on_behalf_of", "")),
+        approval=names.get(spec.get("approval", "")),
     )
 
 

@@ -87,7 +87,8 @@ def test_provisioning_api_calls_are_idempotent(fake_neon):
     client, state = fake_neon
     first = neon.ensure_project(client, "empire-platform", "aws-ap-southeast-1")
     password = neon.ensure_migrator(client, *first[:2])
-    assert first == ("p-1", "br-1", "ep-1.neon.test") and password == "pw/with?odd&chars"  # pragma: allowlist secret (synthetic test value)
+    assert first == ("p-1", "br-1", "ep-1.neon.test")
+    assert password == "pw/with?odd&chars"
     creates = [c for c in state["calls"] if c[0] == "POST"]
     assert len(creates) == 4  # project (after one 423 retry), migrator role, database
     state["calls"].clear()
@@ -105,7 +106,8 @@ def test_runtime_roles_are_least_privilege_and_keep_their_passwords(cluster):
                      " THEN CREATE ROLE neon_superuser NOLOGIN; END IF; END $$")
     owner = f"postgresql:///empire?host={cluster.socket_dir}&port=5432&user=postgres"
     first = neon.ensure_runtime_roles(owner, {})
-    assert set(first) == set(neon.RUNTIME_ROLES) and len(set(first.values())) == len(first)
+    assert set(first) == set(neon.RUNTIME_ROLES)
+    assert len(set(first.values())) == len(first)
     kept = neon.ensure_runtime_roles(owner, {"tasks_api": neon.url("h", "tasks_api", first["tasks_api"])})
     assert kept["tasks_api"] == first["tasks_api"]
     socket = {role: f"postgresql:///empire?host={cluster.socket_dir}&port=5432&user={role}"
@@ -116,7 +118,8 @@ def test_runtime_roles_are_least_privilege_and_keep_their_passwords(cluster):
 def test_secrets_file_is_owner_only_and_parsed(tmp_path, monkeypatch):
     path = tmp_path / "cfg" / "db.env"
     neon.write_secrets(path, {"tasks_api": "postgresql://a?sslmode=require", "empire_migrator": "postgresql://b?sslmode=require"})
-    assert oct(path.stat().st_mode & 0o777) == "0o600" and oct(path.parent.stat().st_mode & 0o777) == "0o700"
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    assert oct(path.parent.stat().st_mode & 0o777) == "0o700"
     monkeypatch.delenv("EMPIRE_DB_URL_TASKS_API", raising=False)
     cluster = HostedCluster.from_env(path)
     assert cluster.conninfo("tasks_api") == "postgresql://a?sslmode=require"
@@ -147,7 +150,9 @@ def test_hosted_urls_must_use_verifying_tls():
     for role in "def":
         with pytest.raises(SystemExit) as error:
             cluster.conninfo(role)
-        assert role in str(error.value) and "SECRET" not in str(error.value) and "h/empire" not in str(error.value)
+        assert role in str(error.value)
+        assert "SECRET" not in str(error.value)
+        assert "h/empire" not in str(error.value)
 
 
 def test_neon_api_never_follows_redirects():
@@ -190,9 +195,10 @@ def test_secrets_write_is_atomic_and_leaves_no_temp_file(tmp_path, monkeypatch):
     assert path.read_text().endswith("EMPIRE_DB_URL_TASKS_API=postgresql://b\n")
     assert [p.name for p in path.parent.iterdir()] == ["db.env"]
     monkeypatch.setattr(os, "replace", lambda *a: (_ for _ in ()).throw(OSError("boom")))
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="boom"):
         neon.write_secrets(path, {"tasks_api": "postgresql://c"})
-    assert [p.name for p in path.parent.iterdir()] == ["db.env"] and "://b" in path.read_text()
+    assert [p.name for p in path.parent.iterdir()] == ["db.env"]
+    assert "://b" in path.read_text()
 
 
 def test_verify_flags_runtime_role_memberships(cluster):

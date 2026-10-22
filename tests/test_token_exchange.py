@@ -68,7 +68,8 @@ def test_exchanged_token_works_only_for_its_audience(apps, subject, exchanger, g
     )
     assert tasks.get("/v1/tasks", headers=bearer(for_graph)).status_code == 401
     claims = jwt.decode(for_tasks, options={"verify_signature": False})
-    assert claims["aud"] == "tasks-api" and claims["exp"] - claims["iat"] <= 300
+    assert claims["aud"] == "tasks-api"
+    assert claims["exp"] - claims["iat"] <= 300
 
 
 def test_scopes_only_narrow(apps, subject, exchanger, gworld):
@@ -76,10 +77,8 @@ def test_scopes_only_narrow(apps, subject, exchanger, gworld):
     read_only = exchanger.exchange(subject(), "tasks-api", ("tasks.task:read",))
     assert tasks.get("/v1/tasks", headers=bearer(read_only)).status_code == 200
     denied = tasks.post("/v1/tasks", json={"title": "x"}, headers=bearer(read_only))
-    assert (
-        denied.status_code == 403
-        and denied.json()["detail"]["reason"] == "scope_insufficient"
-    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["reason"] == "scope_insufficient"
     # A wide scope does not add permissions the caller lacks: the viewer still cannot write.
     viewer = exchanger.exchange(subject(sub=gworld.viewer), "tasks-api")
     assert (
@@ -133,7 +132,8 @@ def test_mcp_with_exchange_never_forwards_the_subject_token(apps, subject, excha
         assert json.loads(result.content[0].text)["title"] == "Exchanged"
     finally:
         tasks.request = original  # type: ignore[method-assign]
-    assert seen and all(header != f"Bearer {token}" for header in seen)
+    assert seen
+    assert all(header != f"Bearer {token}" for header in seen)
     claims = jwt.decode(
         seen[0].removeprefix("Bearer "), options={"verify_signature": False}
     )

@@ -114,7 +114,8 @@ def test_recovery_after_graph_outage_is_bounded(cluster, apps, gworld, gtoken, m
         "events": delivered,
         "seconds": round(seconds, 3),
     }
-    assert delivered >= 100 and seconds < 60
+    assert delivered >= 100
+    assert seconds < 60
     urns = [task["urn"] for task in made]
     assert (
         superuser(
@@ -138,10 +139,8 @@ def test_connection_exhaustion_fails_fast(cluster, apps, gworld, gtoken, metrics
             "status": response.status_code,
             "seconds": round(elapsed, 3),
         }
-        assert (
-            response.status_code == 503
-            and response.json()["detail"]["error"] == "unavailable"
-        )
+        assert response.status_code == 503
+        assert response.json()["detail"]["error"] == "unavailable"
         assert elapsed < 2
     finally:
         for conn in held:

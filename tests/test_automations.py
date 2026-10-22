@@ -204,10 +204,8 @@ def test_revocation_mid_run_stops_the_next_call(cluster, env):
     second = client.put(
         "/v1/tasks/external/engagements/E-2", json={"title": "Other"}, headers=headers
     )
-    assert (
-        second.status_code == 403
-        and second.json()["detail"]["reason"] == "delegation_invalid"
-    )
+    assert second.status_code == 403
+    assert second.json()["detail"]["reason"] == "delegation_invalid"
     retry = client.put(
         "/v1/tasks/external/engagements/E-1",
         json={"title": "Next action"},
@@ -218,7 +216,8 @@ def test_revocation_mid_run_stops_the_next_call(cluster, env):
     renewed = next(
         i for i in provision(cluster, ws.id) if i.automation == "engagement-sync"
     )
-    assert renewed.renewed and renewed.delegation != item.delegation
+    assert renewed.renewed
+    assert renewed.delegation != item.delegation
     again = client.put(
         "/v1/tasks/external/engagements/E-1",
         json={"title": "Next action"},
@@ -271,9 +270,8 @@ def test_provisioning_is_idempotent_and_follows_scope_changes(cluster, env):
         "scopes"
     ] = ["tasks.task:read"]
     third = {i.automation: i for i in provision(cluster, ws.id, narrowed)}
-    assert third["sales-pipeline"].renewed and third["sales-pipeline"].scopes == (
-        "tasks.task:read",
-    )
+    assert third["sales-pipeline"].renewed
+    assert third["sales-pipeline"].scopes == ("tasks.task:read",)
     assert not third["decision-review"].renewed
     with cluster.connect("postgres") as conn:
         active = conn.execute(
@@ -306,9 +304,8 @@ def test_provision_only_touches_the_named_automations(cluster):
 
 def test_deploy_verifier_only_reads():
     verifier = next(a for a in REGISTRY["automations"] if a["id"] == "deploy-verifier")
-    assert verifier["scopes"] and all(
-        scope.endswith(":read") for scope in verifier["scopes"]
-    )
+    assert verifier["scopes"]
+    assert all(scope.endswith(":read") for scope in verifier["scopes"])
     # sensitive personal data stays out of reach: the probe expects 403 there
     assert not any(
         scope.split(".")[0] in {"diary", "accounts", "health"}

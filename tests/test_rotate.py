@@ -142,7 +142,8 @@ def test_rotation_mints_then_pushes_every_target_and_deploys_vercel_once(
         ["vercel", "deploy", "--prod", "--yes"]
     ]
     out = capsys.readouterr().out
-    assert jwt(new_exp) not in out and "signature-not-checked" not in out
+    assert jwt(new_exp) not in out
+    assert "signature-not-checked" not in out
 
 
 def test_dry_run_mints_and_pushes_nothing(tmp_path):

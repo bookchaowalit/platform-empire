@@ -85,7 +85,7 @@ def test_non_rsa_key_is_refused():
         )
         .decode()
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must be an RSA public key"):
         jwks.rsa_jwk(pem)
 
 

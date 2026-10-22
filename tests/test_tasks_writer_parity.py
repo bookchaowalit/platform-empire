@@ -59,9 +59,8 @@ def test_concurrent_external_upserts_create_one_task(client, token, world, clust
         thread.start()
     for thread in threads:
         thread.join()
-    assert sorted(results).count(201) == 1 and all(
-        code in (200, 201) for code in results
-    )
+    assert sorted(results).count(201) == 1
+    assert all(code in (200, 201) for code in results)
     count = superuser(
         cluster,
         "SELECT count(*) FROM tasks.tasks WHERE external_source = 'gmail' AND external_id = %s",
@@ -139,7 +138,8 @@ def test_recurring_occurrences_are_generated_once(client, token, world, cluster)
         "2026-10-22",
     ]
     assert [t["title"] for t in first["created"]][0] == "[R1] Weekly long run"  # noqa: RUF015 - an empty list should fail as IndexError
-    assert retry["created"] == [] and retry["existing"] == 3
+    assert retry["created"] == []
+    assert retry["existing"] == 3
     later = client.post(
         f"/v1/tasks/{parent['id']}/occurrences/generate",
         json={"until": "2026-10-29"},
@@ -197,9 +197,8 @@ def test_writer_fields_round_trip_and_archive(client, token, world, cluster):
     archived = client.post(
         f"/v1/tasks/{child['id']}/archive", json={"reason": "booked"}, headers=owner
     ).json()
-    assert (
-        archived["archived_at"] is not None and archived["archive_reason"] == "booked"
-    )
+    assert archived["archived_at"] is not None
+    assert archived["archive_reason"] == "booked"
     assert child["id"] not in [
         t["id"] for t in client.get("/v1/tasks", headers=owner).json()["items"]
     ]
@@ -213,10 +212,8 @@ def test_parent_from_another_workspace_is_rejected(client, token, world):
         json={"title": "Child", "parent_task_id": beta_task["id"]},
         headers=token(world.owner, world.alpha),
     )
-    assert (
-        response.status_code == 422
-        and response.json()["detail"]["error"] == "reference_not_found"
-    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "reference_not_found"
 
 
 def test_generate_rejects_a_zero_interval_instead_of_looping(client, token, world):
@@ -258,10 +255,8 @@ def test_generate_is_capped_per_call_and_a_retry_continues(
     second = client.post(
         f"/v1/tasks/{parent['id']}/occurrences/generate", json=body, headers=owner
     ).json()
-    assert (
-        len(second["created"]) == MAX_OCCURRENCES_PER_CALL
-        and second["existing"] == MAX_OCCURRENCES_PER_CALL
-    )
+    assert len(second["created"]) == MAX_OCCURRENCES_PER_CALL
+    assert second["existing"] == MAX_OCCURRENCES_PER_CALL
     assert (
         first["created"][-1]["recurrence_occurrence"] + 1
         == second["created"][0]["recurrence_occurrence"]

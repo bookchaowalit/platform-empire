@@ -86,7 +86,9 @@ def test_apply_posts_generate_per_parent_with_until():
         [task(1, recurrence_rule="daily"), task(2, recurrence_rule="weekly")]
     )
     counts = run(http, TODAY, dry_run=False)
-    assert counts["parents"] == 2 and counts["generated"] == 2 and counts["errors"] == 0
+    assert counts["parents"] == 2
+    assert counts["generated"] == 2
+    assert counts["errors"] == 0
     assert [(c[1], c[2]) for c in posts(http)] == [
         ("/v1/tasks/id-1/occurrences/generate", {"until": "2026-10-11"}),
         ("/v1/tasks/id-2/occurrences/generate", {"until": "2026-10-11"}),
@@ -96,7 +98,8 @@ def test_apply_posts_generate_per_parent_with_until():
 def test_dry_run_writes_nothing_and_previews():
     http = FakeHttp([task(1, recurrence_rule="daily", due_date="2026-10-09")])
     counts = run(http, TODAY, dry_run=True)
-    assert posts(http) == [] and counts["generated"] == 2  # 10-10 and 10-11
+    assert posts(http) == []
+    assert counts["generated"] == 2
 
 
 def test_preview_continues_after_existing_instances():
@@ -109,11 +112,11 @@ def test_preview_continues_after_existing_instances():
 def test_unknown_rule_is_skipped_not_fatal():
     http = FakeHttp([task(1, recurrence_rule="whenever")])
     counts = run(http, TODAY, dry_run=False)
-    assert counts["unknown_rule"] == 1 and counts["errors"] == 0 and posts(http) == []
-    assert (
-        recurrence_step("every 3d").days == 3
-        and recurrence_step("every 2 weeks").days == 14
-    )
+    assert counts["unknown_rule"] == 1
+    assert counts["errors"] == 0
+    assert posts(http) == []
+    assert recurrence_step("every 3d").days == 3
+    assert recurrence_step("every 2 weeks").days == 14
 
 
 def test_one_failing_parent_does_not_block_the_rest():
@@ -122,7 +125,9 @@ def test_one_failing_parent_does_not_block_the_rest():
         fail={"id-1"},
     )
     counts = run(http, TODAY, dry_run=False)
-    assert counts["errors"] == 1 and counts["generated"] == 1 and len(posts(http)) == 2
+    assert counts["errors"] == 1
+    assert counts["generated"] == 1
+    assert len(posts(http)) == 2
 
 
 def test_pagination_follows_cursor():
@@ -193,9 +198,9 @@ def test_non_positive_or_absurd_interval_is_an_unknown_rule(rule):
     )
     http = FakeHttp([task(1, recurrence_rule=rule)])
     counts = run(http, TODAY, dry_run=False)
-    assert (
-        counts["unknown_rule"] == 1 and counts["generated"] == 0 and posts(http) == []
-    )
+    assert counts["unknown_rule"] == 1
+    assert counts["generated"] == 0
+    assert posts(http) == []
     assert (
         run(FakeHttp([task(1, recurrence_rule=rule)]), TODAY, dry_run=True)[
             "unknown_rule"
@@ -219,7 +224,8 @@ def test_bad_token_never_appears_in_output(monkeypatch, capsys, token):
     monkeypatch.setenv("RECURRING_GEN_TOKEN", token)
     code = recurring.main([])
     captured = capsys.readouterr()
-    assert code == 2 and "zz" not in captured.out + captured.err
+    assert code == 2
+    assert "zz" not in captured.out + captured.err
     assert json.loads(captured.out)["error"] in ("invalid_config", "missing_config")
 
 
@@ -241,7 +247,8 @@ def test_request_build_failure_leaks_nothing(monkeypatch, capsys):
     http = recurring.Http("https://tasks.example", "tok\nsecret-part")
     with pytest.raises(recurring.RequestError) as caught:
         http.call("GET", "/v1/tasks")
-    assert "secret-part" not in str(caught.value) and caught.value.__cause__ is None
+    assert "secret-part" not in str(caught.value)
+    assert caught.value.__cause__ is None
     monkeypatch.setenv("EMPIRE_TASKS_API_URL", "https://tasks.example")
     monkeypatch.setenv("RECURRING_GEN_TOKEN", "tok")
     real = recurring.Http
@@ -250,7 +257,5 @@ def test_request_build_failure_leaks_nothing(monkeypatch, capsys):
     )
     assert recurring.main([]) == 1
     captured = capsys.readouterr()
-    assert (
-        "secret-part" not in captured.out + captured.err
-        and "request_failed" in captured.out
-    )
+    assert "secret-part" not in captured.out + captured.err
+    assert "request_failed" in captured.out

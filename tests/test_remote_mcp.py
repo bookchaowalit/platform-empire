@@ -247,11 +247,9 @@ def test_tool_layer_refuses_unmapped_or_anonymous_callers_too(mcp_keys, trusting
 
 
 def test_empty_or_missing_map_allows_nobody(mcp_keys, trusting_tasks, clerk):
-    assert (
-        parse_subjects(None) == {}
-        and parse_subjects("") == {}
-        and parse_subjects("{}") == {}
-    )
+    assert parse_subjects(None) == {}
+    assert parse_subjects("") == {}
+    assert parse_subjects("{}") == {}
     app = build_app(
         config(mcp_keys, {}),
         tasks=trusting_tasks,
@@ -331,14 +329,13 @@ def test_mapped_subject_lists_and_creates_with_attribution(
         audience="tasks-api",
         issuer="empire-mcp",
     )
-    assert claims["sub"] == str(gworld.owner) and claims["ws"] == str(gworld.ws)
+    assert claims["sub"] == str(gworld.owner)
+    assert claims["ws"] == str(gworld.ws)
     assert claims["act"] == {"sub": "clerk:user_owner"}
     assert claims["scope"].split() == list(MCP_SCOPES)
-    assert (
-        "del" not in claims
-        and "obo" not in claims
-        and claims["exp"] - claims["iat"] <= 300
-    )
+    assert "del" not in claims
+    assert "obo" not in claims
+    assert claims["exp"] - claims["iat"] <= 300
     assert len(
         {jwt.decode(t, options={"verify_signature": False})["jti"] for t in sent}
     ) == len(sent)
@@ -349,7 +346,8 @@ def test_viewer_cannot_exceed_real_permissions(hosted, clerk):
     viewer = clerk.issue("user_viewer")
     assert tool(client, viewer, "tasks.list", {})["isError"] is False
     denied = tool(client, viewer, "tasks.create", {"title": "Nope"})
-    assert denied["isError"] is True and "403" in denied["content"][0]["text"]
+    assert denied["isError"] is True
+    assert "403" in denied["content"][0]["text"]
 
 
 def test_mcp_token_cannot_delete_or_archive(trusting_tasks, mcp_keys, gworld, gtoken):
@@ -367,10 +365,8 @@ def test_mcp_token_cannot_delete_or_archive(trusting_tasks, mcp_keys, gworld, gt
         ("POST", f"/v1/tasks/{task['id']}/archive", {"reason": "via mcp"}),
     ):
         response = trusting_tasks.request(method, path, headers=headers, json=body)
-        assert (
-            response.status_code == 403
-            and response.json()["detail"]["reason"] == "scope_insufficient"
-        )
+        assert response.status_code == 403
+        assert response.json()["detail"]["reason"] == "scope_insufficient"
 
 
 # --- tasks-api trusts the MCP issuer narrowly ------------------------------------------------------------------
@@ -394,7 +390,7 @@ def mcp_claims(gworld, ttl: int = 300, **overrides) -> dict:
 
 
 @pytest.mark.parametrize(
-    "overrides, signer",
+    ("overrides", "signer"),
     [
         ({"scope": " ".join([*MCP_SCOPES, "tasks.archive:write"])}, "mcp"),
         ({"scope": "tasks.task:delete"}, "mcp"),
@@ -448,10 +444,8 @@ def test_valid_mcp_token_is_read_only_on_its_scopes_and_channel(
     denied = trusting_tasks.post(
         "/v1/tasks", json={"title": "x"}, headers=bearer(token)
     )
-    assert (
-        denied.status_code == 403
-        and denied.json()["detail"]["reason"] == "scope_insufficient"
-    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["reason"] == "scope_insufficient"
 
 
 def test_mcp_tokens_are_refused_where_the_issuer_is_not_trusted(apps, mcp_keys, gworld):
@@ -558,14 +552,14 @@ def test_server_config_reads_mcp_subject_pairs(gkeys, mcp_keys):
 
 
 def test_verifier_refuses_ambiguous_mcp_configuration(gkeys, mcp_keys):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must differ from the main issuer"):
         TokenVerifier(
             gkeys[1],
             "empire-mcp",
             mcp_issuer="empire-mcp",
             mcp_public_key_pem=mcp_keys[1],
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must be given together"):
         TokenVerifier(gkeys[1], ISSUER, mcp_issuer="empire-mcp")
     with pytest.raises(Unauthenticated):
         TokenVerifier(gkeys[1], ISSUER).verify(None, None)
@@ -612,7 +606,7 @@ def test_server_config_trusts_the_mcp_issuer_only_with_its_own_key(gkeys, mcp_ke
 
 
 def test_minter_caps_lifetime_and_audiences(mcp_keys, gworld):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="ttl must be between"):
         McpTokenMinter(mcp_keys[0], ttl=301)
     from empire_platform.token_exchange import ExchangeRefused
 
@@ -629,11 +623,9 @@ def test_clerk_verifier_accepts_live_tokens_and_sends_the_secret(clerk):
     verifier = clerk.verifier()
     token = clerk.issue("user_owner")
     access = asyncio.run(verifier.verify_token(token))
-    assert (
-        access is not None
-        and access.subject == "user_owner"
-        and access.client_id == "client_1"
-    )
+    assert access is not None
+    assert access.subject == "user_owner"
+    assert access.client_id == "client_1"
     assert clerk.authorized == [True]
     assert SECRET not in repr(verifier)
 
@@ -681,13 +673,15 @@ def test_clerk_cache_never_outlives_60_seconds(clerk):
         len(key) == 64 and token not in key for key in verifier._cache
     )  # SHA-256 keys only
     now[0] += CACHE_MAX_SECONDS - 1
-    assert asyncio.run(verifier.verify_token(token)) is not None and clerk.calls == 1
+    assert asyncio.run(verifier.verify_token(token)) is not None
+    assert clerk.calls == 1
     clerk.tokens[token]["revoked"] = (
         True  # revoked at Clerk: visible as soon as the cache entry ends
     )
     now[0] += 1
-    assert asyncio.run(verifier.verify_token(token)) is None and clerk.calls == 2
-    with pytest.raises(ValueError):
+    assert asyncio.run(verifier.verify_token(token)) is None
+    assert clerk.calls == 2
+    with pytest.raises(ValueError, match="cache_seconds must be between"):
         clerk.verifier(cache_seconds=CACHE_MAX_SECONDS + 1)
 
 
@@ -697,7 +691,8 @@ def test_clerk_cache_ends_with_the_token(clerk):
     token = clerk.issue("user_owner", expiration=int(now[0]) + 10)
     assert asyncio.run(verifier.verify_token(token)) is not None
     now[0] += 11
-    assert asyncio.run(verifier.verify_token(token)) is None and clerk.calls == 2
+    assert asyncio.run(verifier.verify_token(token)) is None
+    assert clerk.calls == 2
 
 
 def test_failures_are_cached_for_15_seconds_only(clerk):
@@ -710,12 +705,12 @@ def test_failures_are_cached_for_15_seconds_only(clerk):
         "expired": False,
     }
     now[0] += 14
-    assert asyncio.run(verifier.verify_token("oat_later")) is None and clerk.calls == 1
+    assert asyncio.run(verifier.verify_token("oat_later")) is None
+    assert clerk.calls == 1
     assert all(len(key) == 64 for key in verifier._negative)
     now[0] += 1
-    assert (
-        asyncio.run(verifier.verify_token("oat_later")) is not None and clerk.calls == 2
-    )
+    assert asyncio.run(verifier.verify_token("oat_later")) is not None
+    assert clerk.calls == 2
 
 
 def test_negative_cache_is_bounded(clerk, monkeypatch):
@@ -787,7 +782,8 @@ def test_check_clerk_reports_paths_without_the_key(capsys, monkeypatch):
     code, lines = hosted_module.check_clerk(
         SECRET, client=httpx.Client(transport=httpx.MockTransport(nowhere.handler))
     )
-    assert code == 1 and all("path not found" in line for line in lines)
+    assert code == 1
+    assert all("path not found" in line for line in lines)
 
     monkeypatch.setattr(
         hosted_module,
@@ -798,7 +794,8 @@ def test_check_clerk_reports_paths_without_the_key(capsys, monkeypatch):
     monkeypatch.delenv("CLERK_API_URL", raising=False)
     assert hosted_module.main(["--check-clerk"]) == 0
     out = capsys.readouterr()
-    assert "https://api.clerk.com/v1" in out.out and SECRET not in out.out + out.err
+    assert "https://api.clerk.com/v1" in out.out
+    assert SECRET not in out.out + out.err
     monkeypatch.delenv("CLERK_SECRET_KEY")
     assert hosted_module.main(["--check-clerk"]) == 2
 
@@ -827,7 +824,8 @@ def test_pinned_clients_reject_other_and_missing_client_ids(clerk):
     access = asyncio.run(
         unpinned.verify_token(clerk.issue("user_owner", client_id=None))
     )
-    assert access is not None and access.client_id == "unknown"
+    assert access is not None
+    assert access.client_id == "unknown"
 
 
 def test_unpinned_client_is_refused_before_the_allowlist(
@@ -853,7 +851,7 @@ def test_unpinned_client_is_refused_before_the_allowlist(
 
 
 @pytest.mark.parametrize(
-    "kind, accepted",
+    ("kind", "accepted"),
     [
         ("clerk_idp_oauth_access_token", True),
         ("oauth_access_token", True),
@@ -976,13 +974,12 @@ def test_hosted_config_requires_its_settings(mcp_keys, gworld):
         "PORT": "9100",
     }
     loaded = hosted_config(env)
-    assert (
-        loaded.resource_url == f"{PUBLIC}/mcp"
-        and loaded.port == 9100
-        and loaded.graph_api is None
-    )
+    assert loaded.resource_url == f"{PUBLIC}/mcp"
+    assert loaded.port == 9100
+    assert loaded.graph_api is None
     assert loaded.subjects == {"user_owner": Subject(gworld.owner, gworld.ws)}
-    assert SECRET not in repr(loaded) and "PRIVATE" not in repr(loaded)
+    assert SECRET not in repr(loaded)
+    assert "PRIVATE" not in repr(loaded)
     for name in (
         "EMPIRE_MCP_PUBLIC_URL",
         "CLERK_ISSUER_URL",
@@ -1017,10 +1014,8 @@ def test_hosted_config_requires_its_settings(mcp_keys, gworld):
         "http://localhost:3601",
     ):
         assert hosted_config({**env, "EMPIRE_TASKS_API": url}).tasks_api == url
-    assert (
-        loaded.clerk_api_url == "https://api.clerk.com/v1"
-        and loaded.trust_forwarded is False
-    )
+    assert loaded.clerk_api_url == "https://api.clerk.com/v1"
+    assert loaded.trust_forwarded is False
     assert hosted_config({**env, "RAILWAY_ENVIRONMENT_ID": "x"}).trust_forwarded is True
     assert (
         hosted_config({**env, "CLERK_API_URL": "https://api.clerk.com"}).clerk_api_url
@@ -1050,7 +1045,8 @@ def test_client_pinning_config_and_startup_warning(mcp_keys, caplog):
     )
     assert pinned.allowed_clients == frozenset({"client_a", "client_b"})
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert SECRET not in caplog.text and "PRIVATE" not in caplog.text
+    assert SECRET not in caplog.text
+    assert "PRIVATE" not in caplog.text
 
 
 def test_graph_tools_only_when_a_graph_api_is_configured(
@@ -1090,4 +1086,5 @@ def test_tokens_never_appear_in_logs(hosted, clerk, caplog):
     assert sent
     for secret in (good, stranger, revoked, "oat_unknown_token_value", SECRET, *sent):
         assert secret not in text
-    assert "subject_not_allowed" in text and "revoked" in text
+    assert "subject_not_allowed" in text
+    assert "revoked" in text

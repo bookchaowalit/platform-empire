@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from empire_platform import monitor
 
 REPORT = {
@@ -45,9 +47,8 @@ def test_breach_is_queued_once_per_day_without_leaking_the_token(monkeypatch):
     assert seen["body"]["notification_type"] == "platform_check"
     assert seen["body"]["severity"] == "critical"
     assert seen["body"]["dedupe_key"] == "platform-check:2026-10-11:breach"
-    assert "Runbook" in seen["body"]["message"] and "tok-secret" not in json.dumps(
-        seen["body"]
-    )
+    assert "Runbook" in seen["body"]["message"]
+    assert "tok-secret" not in json.dumps(seen["body"])
 
 
 def test_api_errors_become_short_messages(monkeypatch):
@@ -55,9 +56,6 @@ def test_api_errors_become_short_messages(monkeypatch):
         raise monitor.urllib.error.URLError("down")
 
     monkeypatch.setattr(monitor.urllib.request, "urlopen", broken)
-    try:
+    with pytest.raises(RuntimeError, match="unreachable") as raised:
         monitor.notify(REPORT, "https://notes.example", "tok")
-    except RuntimeError as error:
-        assert "unreachable" in str(error) and "tok" not in str(error)
-    else:
-        raise AssertionError("expected RuntimeError")
+    assert "tok" not in str(raised.value)

@@ -180,7 +180,8 @@ def test_run_pushes_every_provider_and_never_prints_a_token(capsys):
         "/api/v3/secrets/raw/EMPIRE_AUTOMATION_TOKEN_OWNER_MCP" in u for _, u in sent
     )
     pushes = [json.loads(line) for line in out.splitlines() if '"push"' in line]
-    assert len(pushes) == 4 and all(p["ok"] for p in pushes)
+    assert len(pushes) == 4
+    assert all(p["ok"] for p in pushes)
 
 
 def test_dry_run_mints_nothing():
@@ -255,7 +256,8 @@ def test_provider_messages_never_reach_the_log(capsys):
     )
     out = capsys.readouterr().out
     assert failures == 1
-    assert "SECRET" not in out and "BAD" in out
+    assert "SECRET" not in out
+    assert "BAD" in out
 
 
 def test_tokens_never_outlive_their_delegation():
@@ -288,7 +290,8 @@ def test_a_failed_infisical_login_fails_only_the_infisical_copies(capsys):
         },
         client,
     )
-    assert apis.infisical is None and apis.cloudflare is not None
+    assert apis.infisical is None
+    assert apis.cloudflare is not None
     minted: list[list[str]] = []
 
     def mint(names):
@@ -297,9 +300,11 @@ def test_a_failed_infisical_login_fails_only_the_infisical_copies(capsys):
 
     failures = hr.run(TARGETS[2:], {"owner-mcp": "forced"}, mint, apis, False)
     # owner-mcp has an Infisical copy: it is not re-minted (that would revoke the live token).
-    assert minted == [] and failures == 2
+    assert minted == []
+    assert failures == 2
     out = capsys.readouterr().out
-    assert '"provider": "infisical"' in out and "HTTP 401" in out
+    assert '"provider": "infisical"' in out
+    assert "HTTP 401" in out
 
 
 def test_an_access_token_skips_the_login():
@@ -333,8 +338,10 @@ def test_preflight_drops_providers_whose_credentials_fail(capsys):
     apis, _ = _apis(recorder)
     apis.infisical = hr.InfisicalApi(apis.railway.client, "expired", "proj", "dev")
     hr.preflight(apis, TARGETS)
-    assert apis.vercel is None and apis.infisical is None
-    assert apis.railway is not None and apis.cloudflare is not None
+    assert apis.vercel is None
+    assert apis.infisical is None
+    assert apis.railway is not None
+    assert apis.cloudflare is not None
     minted: list[list[str]] = []
 
     def mint(names):

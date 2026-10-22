@@ -108,9 +108,10 @@ def test_filters_match_the_legacy_queries(setup):
     client, _, owner, made, _ = setup
     a, b, c, child = (made[k]["number"] for k in ("a", "b", "c", "child"))
     today = date.today()
-    get = lambda **params: numbers(
-        client.get("/v1/tasks", params=params, headers=owner)
-    )
+
+    def get(**params):
+        return numbers(client.get("/v1/tasks", params=params, headers=owner))
+
     assert get(project="alpha") == [a, b]
     assert get(priority_max=2) == [a, c]
     assert get(due_from=str(today), due_before=str(today + timedelta(days=7))) == [b]
@@ -136,7 +137,8 @@ def test_stats_count_and_group(setup):
         params={"group_by": "project", "project": "alpha"},
         headers=owner,
     ).json()
-    assert stats["total"] == 2 and stats["groups"] == [{"key": "alpha", "count": 2}]
+    assert stats["total"] == 2
+    assert stats["groups"] == [{"key": "alpha", "count": 2}]
     by_status = client.get(
         "/v1/tasks/stats", params={"group_by": "status"}, headers=owner
     ).json()
@@ -232,9 +234,12 @@ def test_role_suggestions_upsert_review_and_compare_and_set(setup):
         "confidence": "high",
         "match_reason": "title mentions report",
     }
-    put = lambda body: client.put(
-        f"/v1/tasks/{task['id']}/role-suggestions", json=body, headers=router
-    ).json()
+
+    def put(body):
+        return client.put(
+            f"/v1/tasks/{task['id']}/role-suggestions", json=body, headers=router
+        ).json()
+
     assert put(suggestion)["outcome"] == "created"
     assert put(suggestion)["outcome"] == "unchanged"
     review = {
@@ -243,9 +248,12 @@ def test_role_suggestions_upsert_review_and_compare_and_set(setup):
         "review_status": "accepted",
         "expected_status": "suggested",
     }
-    patch = lambda body: client.patch(
-        f"/v1/tasks/{task['id']}/role-suggestions", json=body, headers=router
-    ).json()
+
+    def patch(body):
+        return client.patch(
+            f"/v1/tasks/{task['id']}/role-suggestions", json=body, headers=router
+        ).json()
+
     assert patch(review)["outcome"] == "updated"
     assert patch(review)["outcome"] == "unchanged"  # no longer 'suggested'
     # A later resync with new evidence keeps the accepted decision.
@@ -338,15 +346,18 @@ def test_withdrawals_remove_only_what_is_asked(setup):
             "review_status": "accepted",
         },
     )
-    withdraw = lambda role: client.delete(
-        f"/v1/tasks/{task['id']}/role-suggestions",
-        headers=router,
-        params={
-            "role_id": role,
-            "source_registry": registry,
-            "only_status": "suggested",
-        },
-    ).json()["outcome"]
+
+    def withdraw(role):
+        return client.delete(
+            f"/v1/tasks/{task['id']}/role-suggestions",
+            headers=router,
+            params={
+                "role_id": role,
+                "source_registry": registry,
+                "only_status": "suggested",
+            },
+        ).json()["outcome"]
+
     assert (withdraw("role.a"), withdraw("role.b")) == (
         "removed",
         "absent",
@@ -399,7 +410,8 @@ def test_reopening_clears_completion(setup):
     reopened = client.patch(
         f"/v1/tasks/{task['id']}", json={"status": "todo"}, headers=owner
     ).json()
-    assert reopened["status"] == "todo" and reopened["completed_at"] is None
+    assert reopened["status"] == "todo"
+    assert reopened["completed_at"] is None
     key = f"/v1/tasks/external/probe/{uuid.uuid4().hex[:8]}"
     assert client.put(
         key, json={"title": "Upstream", "status": "done"}, headers=owner
@@ -407,7 +419,8 @@ def test_reopening_clears_completion(setup):
     again = client.put(
         key, json={"title": "Upstream", "status": "in_progress"}, headers=owner
     ).json()["task"]
-    assert again["status"] == "in_progress" and again["completed_at"] is None
+    assert again["status"] == "in_progress"
+    assert again["completed_at"] is None
 
 
 def test_external_identity_is_set_once(setup):
@@ -415,13 +428,17 @@ def test_external_identity_is_set_once(setup):
     first = client.post("/v1/tasks", json={"title": "Pushed out"}, headers=owner).json()
     other = client.post("/v1/tasks", json={"title": "Another"}, headers=owner).json()
     ref = f"td-{uuid.uuid4().hex[:8]}"
-    put = lambda task, ext: client.put(
-        f"/v1/tasks/{task['id']}/external-identity",
-        json={"source": "todoist", "external_id": ext},
-        headers=owner,
-    )
+
+    def put(task, ext):
+        return client.put(
+            f"/v1/tasks/{task['id']}/external-identity",
+            json={"source": "todoist", "external_id": ext},
+            headers=owner,
+        )
+
     bound = put(first, ref)
-    assert bound.status_code == 200 and (
+    assert bound.status_code == 200
+    assert (
         bound.json()["external_source"],
         bound.json()["external_id"],
     ) == ("todoist", ref)
@@ -451,7 +468,8 @@ def test_upsert_with_if_match_never_clobbers_a_newer_edit(setup):
         json={"title": "Remote v2"},
         headers={**owner, "If-Match": str(current["version"])},
     )
-    assert fresh.status_code == 200 and fresh.json()["task"]["title"] == "Remote v2"
+    assert fresh.status_code == 200
+    assert fresh.json()["task"]["title"] == "Remote v2"
     missing = f"/v1/tasks/external/probe/{uuid.uuid4().hex[:8]}"
     assert (
         client.put(
@@ -470,9 +488,12 @@ def test_upsert_with_if_match_never_clobbers_a_newer_edit(setup):
 def test_dependencies_are_idempotent_and_validated(setup):
     client, headers, owner, made, ids = setup
     a, b = made["a"], made["b"]
-    put = lambda task, body: client.put(
-        f"/v1/tasks/{task['id']}/dependencies", json=body, headers=owner
-    )
+
+    def put(task, body):
+        return client.put(
+            f"/v1/tasks/{task['id']}/dependencies", json=body, headers=owner
+        )
+
     assert put(b, {"depends_on": a["number"]}).json()["outcome"] == "created"
     assert put(b, {"depends_on": a["number"]}).json()["outcome"] == "unchanged"
     assert put(b, {"depends_on": b["number"]}).status_code == 422  # no self dependency
@@ -488,9 +509,9 @@ def test_dependencies_are_idempotent_and_validated(setup):
         }
     ]
     reader = headers(sub=ids["bot"], delegation=ids["reader"])
+    assert put.__call__
     assert (
-        put.__call__
-        and client.put(
+        client.put(
             f"/v1/tasks/{a['id']}/dependencies",
             json={"depends_on": b["number"]},
             headers=reader,

@@ -111,7 +111,8 @@ def test_loop_backs_off_on_errors_and_recovers():
         return PublishReport(delivered=1)
 
     run_loop(step, 5, FakeStop(), max_iterations=5, log=lines.append)
-    assert waits[:3] == [10, 20, 40] and waits[3:] == [5, 5]
+    assert waits[:3] == [10, 20, 40]
+    assert waits[3:] == [5, 5]
     assert "secret-host" not in "".join(lines)
     assert json.loads(lines[0])["error"] == "ConnectionError"
 
@@ -132,7 +133,8 @@ def test_key_generation_permissions_and_no_overwrite(tmp_path):
 def test_cli_keys_prints_only_public_path(tmp_path, capsys):
     assert automations.main(["keys", "--dir", str(tmp_path / "k")]) == 0
     out = capsys.readouterr().out.strip()
-    assert out == str(tmp_path / "k" / "public.pem") and "PRIVATE" not in out
+    assert out == str(tmp_path / "k" / "public.pem")
+    assert "PRIVATE" not in out
 
 
 def test_production_tokens(cluster, monkeypatch, tmp_path):
@@ -244,7 +246,8 @@ def test_production_tokens(cluster, monkeypatch, tmp_path):
         == 0
     )
     files = sorted(tokens.glob("*.jwt"))
-    assert len(files) > 1 and tokens / "owner-manual.jwt" in files
+    assert len(files) > 1
+    assert tokens / "owner-manual.jwt" in files
     assert not [
         p for p in tokens.iterdir() if p.suffix != ".jwt"
     ]  # no leftover temp files
@@ -261,7 +264,8 @@ def test_production_tokens(cluster, monkeypatch, tmp_path):
     owner = jwt.decode(
         (tokens / "owner-manual.jwt").read_text(), options={"verify_signature": False}
     )
-    assert owner["sub"] == str(ws.owner) and "del" not in owner
+    assert owner["sub"] == str(ws.owner)
+    assert "del" not in owner
     bearer = "Bearer " + (tokens / "owner-manual.jwt").read_text()
     pub = (keys / "public.pem").read_text()
     prod = TokenVerifier(pub, "empire-prod", max_lifetime=30 * 86400)
@@ -321,7 +325,7 @@ def test_delegated_tokens_may_live_up_to_the_hosted_max():
 
 
 def test_lifetime_has_a_hard_upper_cap():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="max_lifetime must be between"):
         TokenVerifier(PEM, "i", max_lifetime=30 * 86400 + 1)
     with pytest.raises(SystemExit):
         server_config(
@@ -451,11 +455,9 @@ def test_publisher_health_endpoint_follows_the_loop():
     ) as response:
         assert response.status == 200
     stop.set()
-    try:
+    with pytest.raises(urllib.error.HTTPError) as raised:
         urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5)
-        raise AssertionError("expected 503 after stop")
-    except urllib.error.HTTPError as error:
-        assert error.code == 503
+    assert raised.value.code == 503
 
 
 def _rsa_pair() -> tuple[str, str]:

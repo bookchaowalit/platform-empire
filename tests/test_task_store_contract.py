@@ -221,7 +221,10 @@ def read_scenario(store) -> dict:
     )
     store.upsert_external("seed", "S-1", {"title": "Seeded child", "parent_task_id": a})
     out["parent_upsert"] = store.find_external("seed", "S-1")["parent_task_id"] == a
-    numbers = lambda rows: sorted(r["title"] for r in rows)
+
+    def numbers(rows):
+        return sorted(r["title"] for r in rows)
+
     out["project"] = numbers(store.list(project="alpha"))
     out["priority"] = numbers(store.list(priority_max=2))
     out["due_window"] = numbers(
@@ -271,16 +274,19 @@ def read_scenario(store) -> dict:
             },
         ),
     ]
-    strip = lambda rows: [
-        (
-            r["task"] == a,
-            r["target_type"],
-            r["target_id"],
-            r["relation"],
-            sorted(r["attributes"].items()),
-        )
-        for r in rows
-    ]
+
+    def strip(rows):
+        return [
+            (
+                r["task"] == a,
+                r["target_type"],
+                r["target_id"],
+                r["relation"],
+                sorted(r["attributes"].items()),
+            )
+            for r in rows
+        ]
+
     out["links_goal"] = strip(store.links(target_type="goal", target_id=7))
     out["links_task_b"] = strip(store.links(task=b))
 
@@ -352,15 +358,15 @@ def test_read_and_relation_methods_agree(
     )
 
     assert legacy["search"] == ["Plan", "Report 100% done"]
-    assert legacy["parent"] == (True, [True]) and legacy["parent_upsert"] is True
+    assert legacy["parent"] == (True, [True])
+    assert legacy["parent_upsert"] is True
     assert legacy["stats"] == {"total": 3, "groups": {"todo": 2, "done": 1}}
     assert legacy["link"] == ["created", "unchanged", "updated", "created", "created"]
     assert legacy["assign"] == ["created", "unchanged", "created"]
     assert legacy["suggest"] == ["created", "unchanged", True, False, "updated"]
     assert legacy["suggestions"] == [(True, "role.writer", "medium", "accepted")]
-    assert legacy["withdraw"] == [True, False, True, False] and legacy[
-        "after_withdraw"
-    ] == (1, 1)
+    assert legacy["withdraw"] == [True, False, True, False]
+    assert legacy["after_withdraw"] == (1, 1)
     assert legacy["dependency"] == ["created", "unchanged"]
     assert legacy["dependencies"] == [(True, True, "finish_to_start")]
     for key in legacy:
@@ -394,7 +400,8 @@ def test_sqlite_and_api_backends_agree(
         ("[R2] Weekly run", "2026-10-15"),
     ]
     assert legacy["occurrence_columns"] == [("weekly", 30, True)] * 2
-    assert legacy["reminder"] == [True, False] and legacy["reminders_due_after"] == []
+    assert legacy["reminder"] == [True, False]
+    assert legacy["reminders_due_after"] == []
     for key in legacy:
         assert api[key] == legacy[key], key
 
@@ -411,7 +418,8 @@ def test_api_backend_reports_permission_errors(task_store, api_url, cluster):
     )
     with pytest.raises(task_store.TaskStoreError) as error:
         store.create({"title": "x"})
-    assert error.value.status == 403 and error.value.reason == "no_permission"
+    assert error.value.status == 403
+    assert error.value.reason == "no_permission"
 
 
 def test_store_rejects_unknown_fields(sqlite_store, tmp_path):

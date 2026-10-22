@@ -47,7 +47,7 @@ LIMITATIONS = """\
 
 
 def run(*args: str, **kwargs) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # noqa: PLW1510 - callers read returncode; check may come in via kwargs
+    return subprocess.run(
         list(args), cwd=ROOT, capture_output=True, text=True, **kwargs
     )
 

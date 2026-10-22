@@ -171,7 +171,8 @@ def test_write_execution_lifecycle_records_audit(client, token, world, cluster):
     assert started.status_code == 201, started.text
     execution = started.json()["execution_id"]
     done = finish(client, headers, execution)
-    assert done.status_code == 200 and done.json()["status"] == "succeeded"
+    assert done.status_code == 200
+    assert done.json()["status"] == "succeeded"
     assert superuser(
         cluster, "SELECT status FROM platform.executions WHERE id = %s", (execution,)
     ) == [("succeeded",)]
@@ -211,7 +212,8 @@ def test_idempotency_key_replays_only_the_same_operation(client, token, world):
     key = f"decision-create-{uuid.uuid4().hex}"
     first = begin(client, token(world.owner, world.ws), key=key)
     second = begin(client, token(world.owner, world.ws), key=key)
-    assert first.status_code == 201 and second.json()["replayed"] is True
+    assert first.status_code == 201
+    assert second.json()["replayed"] is True
     assert second.json()["execution_id"] == first.json()["execution_id"]
     changed = begin(
         client,
@@ -219,10 +221,8 @@ def test_idempotency_key_replays_only_the_same_operation(client, token, world):
         key=key,
         action="decisions.decision:delete",
     )
-    assert (
-        changed.status_code == 409
-        and changed.json()["detail"]["reason"] == "idempotency_conflict"
-    )
+    assert changed.status_code == 409
+    assert changed.json()["detail"]["reason"] == "idempotency_conflict"
     # Keys are per actor: another caller's key never reaches this execution.
     other = client.post(
         "/v1/executions",
@@ -455,10 +455,8 @@ def test_alias_into_another_cell_is_refused(client, token, world, cluster):
         headers=publisher_headers(token, world),
         json=event(world.ws, subject=alias),
     )
-    assert (
-        response.status_code == 403
-        and response.json()["detail"]["reason"] == "outside_cell"
-    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["reason"] == "outside_cell"
 
 
 def test_malformed_events_are_client_errors(client, token, world):
