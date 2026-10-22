@@ -29,10 +29,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import psycopg
 from psycopg import sql
+from psycopg.rows import TupleRow
 
 from empire_platform.devdb import (
     DATABASE,
@@ -247,16 +248,23 @@ def verify(cluster: HostedCluster) -> list[str]:
                 problems.append(
                     f"{role}: has elevated attributes or neon_superuser membership"
                 )
-        members = conn.execute(
-            "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = ANY(%s)",
-            (list(RUNTIME_ROLES),),
-        ).fetchone()[0]
+        # count(*) without GROUP BY always yields exactly one row.
+        members = cast(
+            TupleRow,
+            conn.execute(
+                "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = ANY(%s)",
+                (list(RUNTIME_ROLES),),
+            ).fetchone(),
+        )[0]
         if members:
             problems.append(f"runtime roles are members of {members} other roles")
-        owned = conn.execute(
-            "SELECT count(*) FROM pg_tables WHERE tableowner = ANY(%s)",
-            (list(RUNTIME_ROLES),),
-        ).fetchone()[0]
+        owned = cast(
+            TupleRow,
+            conn.execute(
+                "SELECT count(*) FROM pg_tables WHERE tableowner = ANY(%s)",
+                (list(RUNTIME_ROLES),),
+            ).fetchone(),
+        )[0]
         if owned:
             problems.append(f"runtime roles own {owned} tables")
     for role in RUNTIME_ROLES:

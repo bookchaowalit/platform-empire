@@ -42,3 +42,31 @@ where = ["src", "packages/authz", "services/tasks", "services/graph", "services/
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "packages/authz", "services", "tests", "scripts"]
+exclude = ["^build/"]
+mypy_path = ["tests", "src", "packages/authz", "services/tasks", "services/graph", "services/mcp", "services/platform"]
+explicit_package_bases = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+# Imports that resolve only in some environments: pgserver is the optional bundled PostgreSQL
+# (dev extra), platform_identity is a separate repository the tests import when installed,
+# task_store / sqlite_task_store are loaded from an adapter checkout outside this repository at
+# test time, and jsonschema ships no type information.
+[[tool.mypy.overrides]]
+module = [
+    "pgserver",
+    "platform_identity.*",
+    "task_store",
+    "sqlite_task_store",
+    "jsonschema",
+]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["src", "packages/authz", "services"]

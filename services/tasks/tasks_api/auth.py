@@ -155,6 +155,8 @@ class TokenVerifier:
         return issuer if isinstance(issuer, str) else None
 
     def _verify_mcp(self, token: str, channel: str | None) -> Principal:
+        # Only reached when mcp_issuer is set, and __post_init__ requires both or neither.
+        assert self.mcp_public_key_pem is not None
         try:
             claims = jwt.decode(
                 token,

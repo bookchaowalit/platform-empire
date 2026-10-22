@@ -124,14 +124,14 @@ def test_mcp_with_exchange_never_forwards_the_subject_token(apps, subject, excha
         seen.append(kwargs["headers"]["Authorization"])
         return original(method, url, **kwargs)
 
-    tasks.request = spy  # type: ignore[method-assign]
+    tasks.request = spy
     try:
         token = subject()
         server = build_server(tasks, graph, lambda: token, exchanger.exchange)
         result = asyncio.run(server.call_tool("tasks.create", {"title": "Exchanged"}))
         assert json.loads(result.content[0].text)["title"] == "Exchanged"
     finally:
-        tasks.request = original  # type: ignore[method-assign]
+        tasks.request = original
     assert seen
     assert all(header != f"Bearer {token}" for header in seen)
     claims = jwt.decode(

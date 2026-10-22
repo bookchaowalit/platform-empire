@@ -28,6 +28,7 @@ import os
 import subprocess
 import time
 from collections.abc import Callable
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -137,6 +138,7 @@ def due_automations(
             due[target.automation] = "local token missing or expiring"
             continue
         if target.provider == "railway":
+            assert target.service is not None  # load_targets requires it for railway
             deployed_exp = token_exp(
                 railway_value(
                     run, checkouts / target.checkout, target.service, target.variable
@@ -152,7 +154,7 @@ def local_due(
     known: set[str],
     within_days: int,
     now: float,
-    skip: set[str] = frozenset(),
+    skip: AbstractSet[str] = frozenset(),
 ) -> dict[str, str]:
     """Token files used only on this machine (CLIs, MCP, monitors) that expire soon.
 
@@ -271,6 +273,7 @@ def rotate(
             )
             continue
         if target.provider == "railway":
+            assert target.service is not None  # load_targets requires it for railway
             ok = push_railway(run, cwd, target.service, target.variable, token)
         else:
             ok = push_vercel(run, cwd, target.variable, token)

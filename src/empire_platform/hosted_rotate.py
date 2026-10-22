@@ -436,6 +436,9 @@ def due_hosted(
         readable.add(target.automation)
         if target.automation in due:
             continue
+        # load_hosted_targets refuses a railway target without project and service.
+        assert target.project is not None
+        assert target.service is not None
         try:
             exp = token_exp(
                 apis.railway.read(target.project, target.service, target.variable)
@@ -452,23 +455,30 @@ def due_hosted(
 
 
 def push(target: HostedTarget, token: str, apis: Apis) -> None:
+    # load_hosted_targets refuses a target without the fields its provider needs
+    # (railway: project and service; vercel: project; cloudflare: worker; infisical: path).
     if target.provider == "railway":
         if apis.railway is None:
             raise RuntimeError("RAILWAY_API_TOKEN is not set")
+        assert target.project is not None
+        assert target.service is not None
         apis.railway.upsert(target.project, target.service, target.variable, token)
     elif target.provider == "vercel":
         if apis.vercel is None:
             raise RuntimeError("VERCEL_TOKEN is not set")
+        assert target.project is not None
         apis.vercel.upsert(target.project, target.variable, token)
     elif target.provider == "cloudflare":
         if apis.cloudflare is None:
             raise RuntimeError(
                 "CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not set"
             )
+        assert target.worker is not None
         apis.cloudflare.put_secret(target.worker, target.variable, token)
     else:
         if apis.infisical is None:
             raise RuntimeError("Infisical machine identity is not set")
+        assert target.path is not None
         apis.infisical.upsert(target.path, target.variable, token)
 
 
@@ -537,7 +547,11 @@ def run(
                 raise RuntimeError("no token minted")
             push(target, token, apis)
             ok, error = True, None
-            if target.provider == "vercel" and target.project not in vercel_projects:
+            if (
+                target.provider == "vercel"
+                and target.project is not None  # always set for vercel (loader)
+                and target.project not in vercel_projects
+            ):
                 vercel_projects.append(target.project)
         except (httpx.HTTPError, LookupError, RuntimeError) as exc:
             ok, error = False, describe_error(exc)

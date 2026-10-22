@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import psycopg
 
@@ -21,9 +21,13 @@ class GraphConsumer:
                 (str(event["workspace_id"]),),
             )
             payload = json.dumps(event, default=str)
-            outcome = conn.execute(
-                "SELECT graph.ingest_event(%s::jsonb)", (payload,)
-            ).fetchone()[0]
+            # A SELECT without FROM always yields one row.
+            outcome = cast(
+                tuple[Any, ...],
+                conn.execute(
+                    "SELECT graph.ingest_event(%s::jsonb)", (payload,)
+                ).fetchone(),
+            )[0]
             if outcome != "duplicate":
                 conn.execute("SELECT graph.record_correlation(%s::jsonb)", (payload,))
             conn.commit()

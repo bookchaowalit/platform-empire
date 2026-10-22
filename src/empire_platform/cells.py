@@ -31,12 +31,12 @@ from datetime import UTC, timedelta
 
 from psycopg.rows import dict_row
 
-from empire_platform.devdb import Cluster, default_cluster
+from empire_platform.devdb import AnyCluster, default_cluster
 from empire_platform.permissions import CELL_OWNERS
 
 
 def grant(
-    cluster: Cluster, workspace_id: uuid.UUID, cell: str, *, apply: bool = True
+    cluster: AnyCluster, workspace_id: uuid.UUID, cell: str, *, apply: bool = True
 ) -> list[str]:
     """Permissions added to the owner role (or that would be, without ``apply``)."""
     permissions = CELL_OWNERS[cell]
@@ -71,7 +71,7 @@ def grant(
     return missing
 
 
-def _bound(cluster: Cluster, workspace_id: uuid.UUID):
+def _bound(cluster: AnyCluster, workspace_id: uuid.UUID):
     conn = cluster.connect("platform_api")
     conn.row_factory = dict_row
     conn.execute(
@@ -81,7 +81,7 @@ def _bound(cluster: Cluster, workspace_id: uuid.UUID):
 
 
 def stuck(
-    cluster: Cluster,
+    cluster: AnyCluster,
     workspace_id: uuid.UUID,
     cell: str,
     min_age: timedelta = timedelta(minutes=15),
@@ -94,7 +94,7 @@ def stuck(
 
 
 def reconcile(
-    cluster: Cluster,
+    cluster: AnyCluster,
     workspace_id: uuid.UUID,
     cell: str,
     execution: uuid.UUID,

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 import psycopg
 from psycopg.rows import tuple_row
@@ -55,7 +55,7 @@ class AuthorizationDenied(Exception):
         self.decision = decision
 
 
-def _call(conn: psycopg.Connection, request: Request, *, lock: bool) -> Decision:
+def _call(conn: psycopg.Connection[Any], request: Request, *, lock: bool) -> Decision:
     # Tuple rows regardless of the connection's row factory.
     row = (
         conn.cursor(row_factory=tuple_row)
@@ -78,15 +78,17 @@ def _call(conn: psycopg.Connection, request: Request, *, lock: bool) -> Decision
         )
         .fetchone()
     )
+    # platform.authorize returns exactly one row on every path (RETURN QUERY).
+    assert row is not None
     return Decision(row[0], row[1], row[2])
 
 
-def authorize(conn: psycopg.Connection, request: Request) -> Decision:
+def authorize(conn: psycopg.Connection[Any], request: Request) -> Decision:
     """Decide without locks; the decision is recorded in the audit trail."""
     return _call(conn, request, lock=False)
 
 
-def enforce(conn: psycopg.Connection, request: Request) -> Decision:
+def enforce(conn: psycopg.Connection[Any], request: Request) -> Decision:
     """Re-check with locks in the acting transaction; raise unless allowed."""
     decision = _call(conn, request, lock=True)
     if not decision.allowed:

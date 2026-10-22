@@ -34,11 +34,11 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 
-from empire_platform.devdb import Cluster, default_cluster
+from empire_platform.devdb import AnyCluster, default_cluster
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STATE_DIR = REPO_ROOT / ".runtime" / "monitor"
@@ -69,7 +69,7 @@ class Finding:
     workspace: str | None = None
 
 
-def snapshot(cluster: Cluster, dbname: str = "empire") -> dict[str, Any]:
+def snapshot(cluster: AnyCluster, dbname: str = "empire") -> dict[str, Any]:
     with cluster.connect("platform_monitor", dbname) as conn:
         conn.row_factory = dict_row
         workspaces = {
@@ -101,18 +101,27 @@ def snapshot(cluster: Cluster, dbname: str = "empire") -> dict[str, Any]:
             "SELECT count(*) AS pending, min(occurred_at) AS oldest, coalesce(max(attempts), 0) AS max_attempts"
             " FROM tasks.outbox WHERE published_at IS NULL"
         ).fetchone()
-        lagging = conn.execute(
-            "SELECT count(*) AS n FROM tasks.outbox o WHERE o.published_at < now() - %s::interval"
-            " AND NOT EXISTS (SELECT 1 FROM graph.inbox i WHERE i.consumer = 'graph' AND i.event_id = o.id)",
-            (f"{int(GRAPH_LAG.total_seconds())} seconds",),
-        ).fetchone()["n"]
+        # Every single-row read below is an aggregate without GROUP BY (or has no
+        # FROM), which always yields exactly one row; `writes` may be missing.
+        assert outbox is not None
+        lagging = cast(
+            DictRow,
+            conn.execute(
+                "SELECT count(*) AS n FROM tasks.outbox o WHERE o.published_at < now() - %s::interval"
+                " AND NOT EXISTS (SELECT 1 FROM graph.inbox i WHERE i.consumer = 'graph' AND i.event_id = o.id)",
+                (f"{int(GRAPH_LAG.total_seconds())} seconds",),
+            ).fetchone(),
+        )["n"]
         writes = conn.execute(
             "SELECT value FROM tasks.settings WHERE key = 'writes_enabled'"
         ).fetchone()
-        mismatches = conn.execute(
-            "SELECT count(*) AS n FROM platform.authorization_decisions"
-            " WHERE reason = 'workspace_mismatch' AND decided_at > now() - interval '1 day'"
-        ).fetchone()["n"]
+        mismatches = cast(
+            DictRow,
+            conn.execute(
+                "SELECT count(*) AS n FROM platform.authorization_decisions"
+                " WHERE reason = 'workspace_mismatch' AND decided_at > now() - interval '1 day'"
+            ).fetchone(),
+        )["n"]
         cells = {
             row["service"]: {
                 "running_warn": row["warn"],
@@ -129,7 +138,7 @@ def snapshot(cluster: Cluster, dbname: str = "empire") -> dict[str, Any]:
                 ),
             )
         }
-        now = conn.execute("SELECT now() AS now").fetchone()["now"]
+        now = cast(DictRow, conn.execute("SELECT now() AS now").fetchone())["now"]
     return {
         "taken_at": now.isoformat(),
         "workspaces": workspaces,
@@ -324,7 +333,7 @@ def evaluate(
 
 
 def run(
-    cluster: Cluster,
+    cluster: AnyCluster,
     api: str | None,
     state_dir: Path = STATE_DIR,
     tokens_dir: Path | None = None,

@@ -13,6 +13,7 @@ import argparse
 import os
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 
 import jwt
@@ -119,7 +120,7 @@ def mint(
     act: uuid.UUID | None = None,
     ttl: int = 600,
     issuer: str = ISSUER,
-    audience: str | list[str] = DEFAULT_AUDIENCES,
+    audience: str | Sequence[str] = DEFAULT_AUDIENCES,
 ) -> str:
     now = int(time.time())
     aud = audience if isinstance(audience, str) else list(audience)

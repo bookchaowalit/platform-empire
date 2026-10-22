@@ -51,7 +51,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from empire_mcp.server import StrictMCPServer, ToolFailed, build_server
 from empire_platform.token_exchange import MCP_ISSUER, McpTokenMinter
@@ -456,7 +456,7 @@ class RateLimitMiddleware:
             )(scope, receive, send)
             return
 
-        async def observe(message: dict) -> None:
+        async def observe(message: Message) -> None:
             if message["type"] == "http.response.start" and message["status"] in (
                 401,
                 403,
@@ -492,7 +492,7 @@ class HostedMCPServer(StrictMCPServer):
         super().__init__(*args, **kwargs)
         self.subjects = dict(subjects)
 
-    async def call_tool(  # type: ignore[override]
+    async def call_tool(
         self, name: str, arguments: dict[str, Any], context: Any = None
     ):
         access = _access_token(context)
@@ -659,8 +659,8 @@ def build_app(
         )
 
     auth = AuthSettings(
-        issuer_url=config.clerk_issuer_url,
-        resource_server_url=config.resource_url,
+        issuer_url=config.clerk_issuer_url,  # type: ignore[arg-type]  # pydantic validates the str into AnyHttpUrl
+        resource_server_url=config.resource_url,  # type: ignore[arg-type]  # pydantic validates the str into AnyHttpUrl
         validate_token_resource=False,
     )  # Clerk tokens are opaque; the allowlist is the gate
     server = HostedMCPServer(

@@ -14,7 +14,11 @@ from __future__ import annotations
 import os
 import re
 import sys
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from sentry_sdk.types import Event, Hint
 
 # scheme://user:password@host -> scheme://user:***@host
 _URL_PASSWORD = re.compile(
@@ -84,7 +88,8 @@ def init_sentry() -> None:
         send_default_pii=False,
         include_local_variables=False,  # frame locals hold JWTs and database URLs
         max_request_body_size="never",
-        before_send=_scrub_event,
+        # Events arrive as plain dicts; sentry_sdk types them as the Event TypedDict.
+        before_send=cast("Callable[[Event, Hint], Event | None]", _scrub_event),
         # Log records are neither events nor breadcrumbs: free-form log text can carry secrets
         # that no pattern can recognise. Unhandled exceptions (FastAPI, excepthook) and capture()
         # still report.

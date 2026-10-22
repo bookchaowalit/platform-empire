@@ -36,7 +36,7 @@ class PublishReport:
 
 
 def publish(
-    connect: Callable[[], psycopg.Connection],
+    connect: Callable[[], psycopg.Connection[Any]],
     deliver: Callable[[dict[str, Any]], Any],
     *,
     batch: int = 100,

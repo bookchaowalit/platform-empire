@@ -216,3 +216,13 @@ def test_verify_flags_runtime_role_memberships(cluster):
         with cluster.connect("postgres", autocommit=True) as conn:
             conn.execute("REVOKE probe_group FROM tasks_api")
             conn.execute("DROP ROLE probe_group")
+
+
+@pytest.mark.parametrize("command", ["start", "stop", "reset", "status"])
+def test_local_only_commands_refuse_hosted_mode(monkeypatch, tmp_path, command):
+    from empire_platform import devdb
+
+    monkeypatch.setenv("EMPIRE_DB_MODE", "hosted")
+    monkeypatch.setattr("empire_platform.devdb.HOSTED_SECRETS", tmp_path / "none.env")
+    with pytest.raises(SystemExit, match="local cluster only"):
+        devdb.main([command])

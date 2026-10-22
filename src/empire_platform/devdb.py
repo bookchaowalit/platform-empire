@@ -19,6 +19,7 @@ import tempfile
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import psycopg
 
@@ -76,7 +77,7 @@ def pg_bin_dir() -> Path:
     if override:
         return Path(override)
     try:
-        import pgserver  # type: ignore[import-untyped]
+        import pgserver
 
         bundled = Path(pgserver.__file__).parent / "pginstall" / "bin"
         if (bundled / "pg_ctl").exists():
@@ -143,8 +144,8 @@ class Cluster:
         return f"host={self.socket_dir} port={PORT} user={role} dbname={dbname}"
 
     def connect(
-        self, role: str, dbname: str = DATABASE, **kwargs
-    ) -> psycopg.Connection:
+        self, role: str, dbname: str = DATABASE, **kwargs: Any
+    ) -> psycopg.Connection[Any]:
         return psycopg.connect(self.conninfo(role, dbname), **kwargs)
 
 
@@ -202,8 +203,8 @@ class HostedCluster:
         return url
 
     def connect(
-        self, role: str, dbname: str = DATABASE, **kwargs
-    ) -> psycopg.Connection:
+        self, role: str, dbname: str = DATABASE, **kwargs: Any
+    ) -> psycopg.Connection[Any]:
         # Neon's pooler cannot keep prepared statements; direct endpoints are used.
         return psycopg.connect(self.conninfo(role, dbname), **kwargs)
 
@@ -211,7 +212,11 @@ class HostedCluster:
         return True
 
 
-def default_cluster() -> Cluster | HostedCluster:
+# What the shared helpers below accept: both kinds connect by role.
+AnyCluster = Cluster | HostedCluster
+
+
+def default_cluster() -> AnyCluster:
     """The local development cluster, or the hosted one when EMPIRE_DB_MODE=hosted."""
     if os.environ.get("EMPIRE_DB_MODE") == "hosted":
         return HostedCluster.from_env()
@@ -219,7 +224,7 @@ def default_cluster() -> Cluster | HostedCluster:
     return Cluster(REPO_ROOT / ".runtime" / "pgdata", runtime / "empire-platform")
 
 
-def bootstrap(cluster: Cluster) -> None:
+def bootstrap(cluster: AnyCluster) -> None:
     """Create roles and the database; safe to run more than once."""
     with cluster.connect(SUPERUSER, "postgres", autocommit=True) as conn:
         conn.execute(BOOTSTRAP.read_text(encoding="utf-8"))
@@ -247,7 +252,7 @@ def migration_files() -> list[Path]:
     return files
 
 
-def migrate(cluster: Cluster, dbname: str = DATABASE) -> list[str]:
+def migrate(cluster: AnyCluster, dbname: str = DATABASE) -> list[str]:
     """Apply pending migrations as empire_migrator; refuse edited ones."""
     applied: list[str] = []
     with cluster.connect("empire_migrator", dbname) as conn:
@@ -256,7 +261,7 @@ def migrate(cluster: Cluster, dbname: str = DATABASE) -> list[str]:
             " name text PRIMARY KEY, sha256 text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"
         )
         conn.commit()
-        done = dict(
+        done: dict[str, str] = dict(
             conn.execute("SELECT name, sha256 FROM public.schema_migrations").fetchall()
         )
         for path in migration_files():
@@ -287,23 +292,31 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     cluster = default_cluster()
 
-    if args.command == "reset":
-        cluster.stop()
-        shutil.rmtree(cluster.data_dir, ignore_errors=True)
-    if args.command in {"start", "reset"}:
-        if not (cluster.data_dir / "PG_VERSION").exists():
-            cluster.init()
-        if not cluster.running():
-            cluster.start()
-        bootstrap(cluster)
-        for name in migrate(cluster):
-            print(f"applied {name}")
-        print(f"ready: {cluster.conninfo('platform_api')}")
-    elif args.command == "stop":
-        cluster.stop()
-        print("stopped")
-    elif args.command == "status":
-        print(f"{'running' if cluster.running() else 'stopped'}: {cluster.data_dir}")
+    if args.command in {"start", "stop", "reset", "status"}:
+        if not isinstance(cluster, Cluster):
+            raise SystemExit(
+                f"empire-db {args.command} manages the local cluster only;"
+                " unset EMPIRE_DB_MODE=hosted"
+            )
+        if args.command == "reset":
+            cluster.stop()
+            shutil.rmtree(cluster.data_dir, ignore_errors=True)
+        if args.command in {"start", "reset"}:
+            if not (cluster.data_dir / "PG_VERSION").exists():
+                cluster.init()
+            if not cluster.running():
+                cluster.start()
+            bootstrap(cluster)
+            for name in migrate(cluster):
+                print(f"applied {name}")
+            print(f"ready: {cluster.conninfo('platform_api')}")
+        elif args.command == "stop":
+            cluster.stop()
+            print("stopped")
+        elif args.command == "status":
+            print(
+                f"{'running' if cluster.running() else 'stopped'}: {cluster.data_dir}"
+            )
     elif args.command == "migrate":
         applied = migrate(cluster)
         print("\n".join(f"applied {name}" for name in applied) or "up to date")

@@ -10,11 +10,11 @@ as an unknown URN.
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, cast
 
 import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 from pydantic import BaseModel, ConfigDict, Field
 from tasks_api.auth import Principal, TokenVerifier, Unauthenticated
 
@@ -51,7 +51,7 @@ class ConsentCreate(BaseModel):
 
 
 def create_app(
-    connect: Callable[[], psycopg.Connection], verifier: TokenVerifier
+    connect: Callable[[], psycopg.Connection[Any]], verifier: TokenVerifier
 ) -> FastAPI:
     app = FastAPI(title="Graph API", version="1.0.0", description=__doc__)
 
@@ -77,7 +77,7 @@ def create_app(
     Caller = Annotated[Principal, Depends(scoped)]
 
     @contextmanager
-    def bound(caller: Principal) -> Iterator[psycopg.Connection]:
+    def bound(caller: Principal) -> Iterator[psycopg.Connection[DictRow]]:
         conn = connect()
         conn.row_factory = dict_row
         try:
@@ -123,10 +123,14 @@ def create_app(
         with bound(caller) as conn:
             if (
                 caller.delegation is not None
-                or not conn.execute(
-                    "SELECT platform.can(%s, %s, NULL) AS ok",
-                    (caller.actor, f"{cell}.{type_}:write"),
-                ).fetchone()["ok"]
+                # A SELECT without FROM always yields one row.
+                or not cast(
+                    DictRow,
+                    conn.execute(
+                        "SELECT platform.can(%s, %s, NULL) AS ok",
+                        (caller.actor, f"{cell}.{type_}:write"),
+                    ).fetchone(),
+                )["ok"]
             ):
                 raise HTTPException(
                     status_code=403, detail={"error": "deny", "reason": "no_permission"}
@@ -142,6 +146,7 @@ def create_app(
                     body.expires_at,
                 ),
             ).fetchone()
+            assert row is not None  # INSERT ... RETURNING without ON CONFLICT
             conn.commit()
         return {"id": str(row["id"])}
 

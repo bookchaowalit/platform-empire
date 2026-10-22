@@ -20,11 +20,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 
 from empire_platform.devdb import (
-    Cluster,
+    AnyCluster,
     contracts_dir,
     default_cluster,
     write_private_file,
@@ -55,7 +56,7 @@ def load_registry(path: Path = REGISTRY) -> dict:
 
 
 def provision(
-    cluster: Cluster,
+    cluster: AnyCluster,
     workspace_id: uuid.UUID,
     registry: dict | None = None,
     only: set[str] | None = None,
@@ -73,10 +74,15 @@ def provision(
         conn.execute(
             "SELECT set_config('app.workspace_id', %s, true)", (str(workspace_id),)
         )
-        owner = conn.execute(
-            "SELECT owner_identity_id FROM platform.workspaces WHERE id = %s",
-            (workspace_id,),
-        ).fetchone()["owner_identity_id"]
+        # Precondition, not a SQL guarantee: callers pass a workspace they looked up.
+        # An unknown id still fails here as before (TypeError on None).
+        owner = cast(
+            DictRow,
+            conn.execute(
+                "SELECT owner_identity_id FROM platform.workspaces WHERE id = %s",
+                (workspace_id,),
+            ).fetchone(),
+        )["owner_identity_id"]
         for automation in registry["automations"]:
             if only is not None and automation["id"] not in only:
                 continue
@@ -87,9 +93,10 @@ def provision(
                 (subject,),
             ).fetchone()
             if row is None:
-                identity = conn.execute("SELECT platform.uuid_v7() AS id").fetchone()[
-                    "id"
-                ]
+                # A SELECT without FROM always yields one row.
+                identity = cast(
+                    DictRow, conn.execute("SELECT platform.uuid_v7() AS id").fetchone()
+                )["id"]
                 conn.execute(
                     "INSERT INTO platform.identities (id, kind, display_name, external_subject)"
                     " VALUES (%s, 'automation', %s, %s)",
@@ -130,15 +137,19 @@ def provision(
                 " AND revoked_at IS NULL",
                 (identity,),
             )
-            delegation = conn.execute("SELECT platform.uuid_v7() AS id").fetchone()[
-                "id"
-            ]
-            expires_at = conn.execute(
-                "INSERT INTO platform.delegations (id, workspace_id, grantor_identity_id, grantee_identity_id, scopes,"
-                " expires_at) VALUES (%s, %s, %s, %s, %s::platform.permission[], now() + make_interval(days => %s))"
-                " RETURNING expires_at",
-                (delegation, workspace_id, owner, identity, list(scopes), days),
-            ).fetchone()["expires_at"]
+            # A SELECT without FROM always yields one row; so does INSERT ... RETURNING.
+            delegation = cast(
+                DictRow, conn.execute("SELECT platform.uuid_v7() AS id").fetchone()
+            )["id"]
+            expires_at = cast(
+                DictRow,
+                conn.execute(
+                    "INSERT INTO platform.delegations (id, workspace_id, grantor_identity_id, grantee_identity_id, scopes,"
+                    " expires_at) VALUES (%s, %s, %s, %s, %s::platform.permission[], now() + make_interval(days => %s))"
+                    " RETURNING expires_at",
+                    (delegation, workspace_id, owner, identity, list(scopes), days),
+                ).fetchone(),
+            )["expires_at"]
             results.append(
                 Provisioned(
                     automation["id"],

@@ -85,7 +85,7 @@ class StrictMCPServer(MCPServer):
         super().__init__(*args, **kwargs)
         self.argument_models: dict[str, type[Strict]] = {}
 
-    async def list_tools(self):  # type: ignore[override]
+    async def list_tools(self):
         tools = await super().list_tools()
         for tool in tools:
             model = self.argument_models.get(tool.name)
@@ -96,7 +96,7 @@ class StrictMCPServer(MCPServer):
                 }
         return tools
 
-    async def call_tool(  # type: ignore[override]
+    async def call_tool(
         self, name: str, arguments: dict[str, Any], context: Any = None
     ):
         model = self.argument_models.get(name)
@@ -206,7 +206,7 @@ def build_server(
             priority=priority,
             project=project,
             tags=tags or [],
-            due_date=due_date,
+            due_date=due_date,  # type: ignore[arg-type]  # pydantic parses the ISO date string
         ).model_dump(mode="json", exclude_none=True)
         return call(tasks, "POST", "/v1/tasks", json=body)
 
@@ -224,9 +224,9 @@ def build_server(
             task_id=task_id,
             title=title,
             description=description,
-            status=status,
+            status=status,  # type: ignore[arg-type]  # pydantic validates the str against the Literal
             priority=priority,
-            due_date=due_date,
+            due_date=due_date,  # type: ignore[arg-type]  # pydantic parses the ISO date string
             tags=tags,
         ).model_dump(mode="json", exclude_none=True, exclude={"task_id"})
         return call(tasks, "PATCH", f"/v1/tasks/{task_id}", json=body)

@@ -68,6 +68,7 @@ def main() -> int:
     )
     (out / "tests-summary.txt").write_text(tests.stdout[-4000:], encoding="utf-8")
     suite = ET.parse(out / "tests.xml").getroot().find("testsuite")
+    assert suite is not None  # pytest's junitxml always nests one <testsuite>
     totals = {
         k: int(suite.get(k, 0)) for k in ("tests", "failures", "errors", "skipped")
     }

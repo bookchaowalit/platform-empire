@@ -167,7 +167,7 @@ def preview_due_dates(
         occurrence = 0
         parent_due = _day(parent.get("due_date"))
         next_due = parent_due + step if parent_due else until
-    out = []
+    out: list[tuple[int, date]] = []
     while next_due <= until and len(out) < MAX_PREVIEW:
         occurrence += 1
         out.append((occurrence, next_due))

@@ -133,7 +133,7 @@ def hosted(mcp_keys, gworld, trusting_tasks, clerk):
         sent.append(kwargs["headers"]["Authorization"].removeprefix("Bearer "))
         return original(method, url, **kwargs)
 
-    trusting_tasks.request = spy  # type: ignore[method-assign]
+    trusting_tasks.request = spy
     subjects = {
         "user_owner": Subject(gworld.owner, gworld.ws),
         "user_viewer": Subject(gworld.viewer, gworld.ws),
@@ -148,7 +148,7 @@ def hosted(mcp_keys, gworld, trusting_tasks, clerk):
         with TestClient(app, base_url=PUBLIC) as client:
             yield client, sent
     finally:
-        trusting_tasks.request = original  # type: ignore[method-assign]
+        trusting_tasks.request = original
 
 
 def rpc(client, token: str | None, method: str, params: dict | None = None, **headers):
@@ -937,14 +937,14 @@ def test_cell_calls_run_off_the_event_loop(hosted, clerk, trusting_tasks):
             seen.append(True)  # worker thread: no running loop to block
         return spy(method, url, **kwargs)
 
-    trusting_tasks.request = probe  # type: ignore[method-assign]
+    trusting_tasks.request = probe
     try:
         assert (
             tool(client, clerk.issue("user_owner"), "tasks.list", {})["isError"]
             is False
         )
     finally:
-        trusting_tasks.request = spy  # type: ignore[method-assign]
+        trusting_tasks.request = spy
     assert seen == [True]
 
 

@@ -27,14 +27,14 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 import psycopg
 from empire_authz import AuthorizationDenied, Request, Resource, authorize, enforce
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi import Path as Path_
 from fastapi import Request as HttpRequest
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 from pydantic import BaseModel, ConfigDict, Field
 
 from empire_platform.token_exchange import MCP_ISSUER
@@ -468,7 +468,7 @@ def row_hash(row: dict[str, Any] | None) -> str | None:
 
 
 def create_app(
-    connect: Callable[[], psycopg.Connection],
+    connect: Callable[[], psycopg.Connection[Any]],
     verifier: TokenVerifier,
 ) -> FastAPI:
     app = FastAPI(title="Tasks API", version="1.0.0", description=__doc__)
@@ -502,7 +502,7 @@ def create_app(
     Caller = Annotated[Principal, Depends(principal)]
 
     @contextmanager
-    def bound(caller: Principal) -> Iterator[psycopg.Connection]:
+    def bound(caller: Principal) -> Iterator[psycopg.Connection[DictRow]]:
         try:
             conn = connect()
         except (
@@ -562,7 +562,7 @@ def create_app(
         )
 
     def load(
-        conn: psycopg.Connection, task_id: uuid.UUID, *, lock: bool = False
+        conn: psycopg.Connection[DictRow], task_id: uuid.UUID, *, lock: bool = False
     ) -> dict[str, Any]:
         row = conn.execute(
             f"SELECT {TASK_FIELDS} FROM tasks.tasks WHERE id = %s{' FOR UPDATE' if lock else ''}",
@@ -575,17 +575,19 @@ def create_app(
     @contextmanager
     def acting(
         caller: Principal, request: Request, idempotency_key: str | None
-    ) -> Iterator[tuple[psycopg.Connection, uuid.UUID]]:
+    ) -> Iterator[tuple[psycopg.Connection[DictRow], uuid.UUID]]:
         """Execution + locked re-check + the write, all in one transaction."""
         with bound(caller) as conn:
             # Locks the switch row: switching writes off waits for writes already under way.
-            if not conn.execute("SELECT tasks.writes_enabled() AS on").fetchone()["on"]:
+            switch = conn.execute("SELECT tasks.writes_enabled() AS on").fetchone()
+            assert switch is not None  # a SELECT without FROM always yields one row
+            if not switch["on"]:
                 raise HTTPException(
                     status_code=503, detail={"error": "writes_disabled"}
                 )
             try:
                 # The execution trigger refuses acting for someone without a live delegation.
-                execution = conn.execute(
+                begun = conn.execute(
                     "SELECT platform.begin_execution(%s, %s, %s, %s, %s, %s, %s, %s) AS id",
                     (
                         caller.initiated_by,
@@ -597,7 +599,9 @@ def create_app(
                         idempotency_key,
                         correlation_id.get(),
                     ),
-                ).fetchone()["id"]
+                ).fetchone()
+                assert begun is not None  # a SELECT without FROM always yields one row
+                execution = begun["id"]
                 enforce(conn, request)
             except (
                 AuthorizationDenied,
@@ -653,7 +657,7 @@ def create_app(
             )
 
     def emit(
-        conn: psycopg.Connection,
+        conn: psycopg.Connection[DictRow],
         caller: Principal,
         execution: uuid.UUID,
         event: str,
@@ -824,9 +828,11 @@ def create_app(
         where, params = filters
         with bound(caller) as conn:
             # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- the WHERE text is a fixed template from task_filters; every value is bound as a named %(...)s parameter
-            total = conn.execute(
+            counted = conn.execute(
                 f"SELECT count(*) AS n FROM tasks.tasks{where}", params
-            ).fetchone()["n"]
+            ).fetchone()
+            assert counted is not None  # an aggregate without GROUP BY yields one row
+            total = counted["n"]
             groups: list[StatGroup] = []
             if group_by:
                 rows = conn.execute(
@@ -933,6 +939,7 @@ def create_app(
                 f" RETURNING {TASK_FIELDS}",
                 [values[c] for c in columns],
             ).fetchone()
+            assert row is not None  # INSERT ... RETURNING without ON CONFLICT
             emit(conn, caller, execution, "created", row["id"], None, row)
         return to_task(row)
 
@@ -971,7 +978,8 @@ def create_app(
         action: str,
         event: str,
         apply: Callable[
-            [psycopg.Connection, dict[str, Any], uuid.UUID], dict[str, Any] | None
+            [psycopg.Connection[DictRow], dict[str, Any], uuid.UUID],
+            dict[str, Any] | None,
         ],
         approval: uuid.UUID | None = None,
         idempotency_key: str | None = None,
@@ -982,6 +990,14 @@ def create_app(
             before = load(conn, task_id, lock=True)
             after = apply(conn, before, execution)
             emit(conn, caller, execution, event, task_id, before, after, extra)
+        return after
+
+    def changed(after: dict[str, Any] | None) -> dict[str, Any]:
+        """The row from an ``apply`` that returns ``before`` or an UPDATE ... RETURNING.
+
+        Such an UPDATE targets the row ``load`` locked FOR UPDATE in the same
+        transaction (one RLS policy covers every command), so it always returns it."""
+        assert after is not None
         return after
 
     @app.patch(
@@ -1027,7 +1043,7 @@ def create_app(
             action = "tasks.calendar:write"
         else:
             action = "tasks.task:write"
-        return to_task(change(caller, task_id, action, "updated", apply))
+        return to_task(changed(change(caller, task_id, action, "updated", apply)))
 
     @app.post(
         "/v1/tasks/{task_id}/complete",
@@ -1048,7 +1064,7 @@ def create_app(
             ).fetchone()
 
         return to_task(
-            change(caller, task_id, "tasks.status:write", "completed", apply)
+            changed(change(caller, task_id, "tasks.status:write", "completed", apply))
         )
 
     @app.delete(
@@ -1161,7 +1177,9 @@ def create_app(
                 (body.source, body.external_id, execution, task_id),
             ).fetchone()
 
-        return to_task(change(caller, task_id, "tasks.task:write", "updated", apply))
+        return to_task(
+            changed(change(caller, task_id, "tasks.task:write", "updated", apply))
+        )
 
     @app.put(
         "/v1/tasks/external/{source}/{external_id}",
@@ -1217,11 +1235,16 @@ def create_app(
                 emit(conn, caller, execution, "created", row["id"], None, row)
                 response.status_code = 201
                 return UpsertResult(outcome="created", task=to_task(row))
-            before = conn.execute(
-                f"SELECT {TASK_FIELDS} FROM tasks.tasks"
-                " WHERE external_source = %s AND external_id = %s FOR UPDATE",
-                (source, external_id),
-            ).fetchone()
+            # Not guaranteed: a task hard-deleted between the conflict above and this
+            # SELECT leaves None here (a 500). The cast keeps that behaviour as is.
+            before = cast(
+                DictRow,
+                conn.execute(
+                    f"SELECT {TASK_FIELDS} FROM tasks.tasks"
+                    " WHERE external_source = %s AND external_id = %s FOR UPDATE",
+                    (source, external_id),
+                ).fetchone(),
+            )
             if if_match is not None and str(before["version"]) != if_match.strip('"'):
                 raise HTTPException(
                     status_code=412, detail={"error": "version_mismatch"}
@@ -1243,6 +1266,7 @@ def create_app(
                 f" RETURNING {TASK_FIELDS}",
                 [*changes.values(), execution, before["id"]],
             ).fetchone()
+            assert after is not None  # the row `before` locked FOR UPDATE above
             emit(conn, caller, execution, "updated", after["id"], before, after)
             return UpsertResult(outcome="updated", task=to_task(after))
 
@@ -1264,7 +1288,7 @@ def create_app(
             ).fetchone()
 
         return to_task(
-            change(caller, task_id, "tasks.archive:write", "archived", apply)
+            changed(change(caller, task_id, "tasks.archive:write", "archived", apply))
         )
 
     @app.post(
@@ -1287,7 +1311,7 @@ def create_app(
             ).fetchone()
 
         return to_task(
-            change(caller, task_id, "tasks.archive:write", "unarchived", apply)
+            changed(change(caller, task_id, "tasks.archive:write", "unarchived", apply))
         )
 
     @app.post(
@@ -1361,7 +1385,7 @@ def create_app(
                 (task_id,),
             ).fetchall()
             occurrence, next_due = next_occurrence(parent, existing, step, body.until)
-            created = []
+            created: list[Task] = []
             while next_due <= body.until and len(created) < MAX_OCCURRENCES_PER_CALL:
                 occurrence += 1
                 row = conn.execute(
@@ -1398,7 +1422,9 @@ def create_app(
             return OccurrenceResult(created=created, existing=len(existing))
 
     # ── relations: links, assignments, role suggestions, types ──────────
-    def by_number(conn: psycopg.Connection, number: int | None) -> uuid.UUID | None:
+    def by_number(
+        conn: psycopg.Connection[DictRow], number: int | None
+    ) -> uuid.UUID | None:
         if number is None:
             return None
         row = conn.execute(
@@ -1459,7 +1485,7 @@ def create_app(
         ],
     ) -> RemovalResult:
         """Withdraw a link; the graph retracts the edge and keeps its history."""
-        outcome: dict[str, str] = {}
+        outcome: dict[str, Literal["removed", "absent"]] = {}
 
         def apply(conn, before, execution):
             row = conn.execute(
@@ -1529,7 +1555,7 @@ def create_app(
         caller: Caller, task_id: uuid.UUID, body: AssignmentPut
     ) -> AssignmentResult:
         """Idempotent: assigning the same assignee twice changes nothing."""
-        outcome: dict[str, str] = {}
+        outcome: dict[str, Literal["created", "unchanged"]] = {}
 
         def apply(conn, before, execution):
             row = conn.execute(
@@ -1613,7 +1639,7 @@ def create_app(
         caller: Caller, task_id: uuid.UUID, body: RoleSuggestionPut
     ) -> RoleSuggestionResult:
         """Upsert by (task, role, registry); a review decision already made is kept unless one is given."""
-        outcome: dict[str, str] = {}
+        outcome: dict[str, Literal["created", "updated", "unchanged"]] = {}
 
         def apply(conn, before, execution):
             current = conn.execute(
@@ -1684,7 +1710,7 @@ def create_app(
         caller: Caller, task_id: uuid.UUID, body: RoleSuggestionReview
     ) -> RoleSuggestionResult:
         """Change the review status; with expected_status it only moves from that status (compare-and-set)."""
-        outcome: dict[str, str] = {}
+        outcome: dict[str, Literal["created", "updated", "unchanged"]] = {}
 
         def apply(conn, before, execution):
             row = conn.execute(
@@ -1731,7 +1757,7 @@ def create_app(
         only_status: Literal["suggested", "accepted", "dismissed"] | None = None,
     ) -> RemovalResult:
         """Withdraw a generated suggestion; with only_status a reviewed one is never removed."""
-        outcome: dict[str, str] = {}
+        outcome: dict[str, Literal["removed", "absent"]] = {}
 
         def apply(conn, before, execution):
             row = conn.execute(
@@ -1789,7 +1815,7 @@ def create_app(
         caller: Caller, task_id: uuid.UUID, body: DependencyPut
     ) -> AssignmentResult:
         """Idempotent: the same dependency twice changes nothing."""
-        outcome: dict[str, str] = {}
+        outcome: dict[str, Literal["created", "unchanged"]] = {}
 
         def apply(conn, before, execution):
             target = by_number(conn, body.depends_on)

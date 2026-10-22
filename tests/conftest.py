@@ -49,7 +49,9 @@ def use_workspace(conn: psycopg.Connection, workspace_id: uuid.UUID | None) -> N
 
 
 def new_id(conn: psycopg.Connection) -> uuid.UUID:
-    return conn.execute("SELECT platform.uuid_v7()").fetchone()[0]
+    row = conn.execute("SELECT platform.uuid_v7()").fetchone()
+    assert row is not None  # a SELECT without FROM always yields one row
+    return row[0]
 
 
 @dataclass
@@ -142,6 +144,8 @@ def has_permission(
     permission: str,
     delegation: uuid.UUID | None = None,
 ) -> bool:
-    return conn.execute(
+    row = conn.execute(
         "SELECT platform.has_permission(%s, %s, %s)", (identity, permission, delegation)
-    ).fetchone()[0]
+    ).fetchone()
+    assert row is not None  # a SELECT without FROM always yields one row
+    return row[0]

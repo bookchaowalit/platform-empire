@@ -27,12 +27,12 @@ import re
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 import psycopg
 from empire_authz import AuthorizationDenied, Request, Resource, authorize, enforce
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 from pydantic import BaseModel, Field
 from tasks_api.auth import Principal, TokenVerifier, Unauthenticated
 
@@ -105,7 +105,7 @@ class Ingested(BaseModel):
 def register(
     app: FastAPI,
     *,
-    connect_platform: Callable[[], psycopg.Connection],
+    connect_platform: Callable[[], psycopg.Connection[Any]],
     platform_verifier: TokenVerifier,
     graph_verifier: TokenVerifier,
     identity_shadow: Callable[..., None] | None = None,
@@ -135,8 +135,8 @@ def register(
 
     @contextmanager
     def bound(
-        principal: Principal, connect: Callable[[], psycopg.Connection]
-    ) -> Iterator[psycopg.Connection]:
+        principal: Principal, connect: Callable[[], psycopg.Connection[Any]]
+    ) -> Iterator[psycopg.Connection[DictRow]]:
         try:
             conn = connect()
         except psycopg.OperationalError as exc:
@@ -262,6 +262,8 @@ def register(
                         "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         args,
                     ).fetchone()
+                    # begin_cell_execution returns one row on every path (RETURN QUERY).
+                    assert started is not None
                     if started["replayed"]:
                         # The same operation again: answer only if all of it is still allowed now.
                         for checking in (request, *extra):
@@ -333,23 +335,29 @@ def register(
         principal = caller(platform_verifier, authorization, x_empire_channel)
         with bound(principal, connect_platform) as conn:
             # The same authority context the execution was started with (begin stores obo only with a delegation).
-            outcome = conn.execute(
-                "SELECT platform.finish_cell_execution(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) AS outcome",
-                (
-                    execution_id,
-                    principal.actor,
-                    principal.delegation,
-                    principal.on_behalf_of,
-                    sorted(principal.scopes) if principal.scopes is not None else None,
-                    body.status,
-                    body.service,
-                    body.action,
-                    body.resource_type,
-                    body.resource_id,
-                    body.before_hash,
-                    body.after_hash,
-                ),
-            ).fetchone()["outcome"]
+            # A SELECT without FROM always yields one row.
+            outcome = cast(
+                DictRow,
+                conn.execute(
+                    "SELECT platform.finish_cell_execution(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) AS outcome",
+                    (
+                        execution_id,
+                        principal.actor,
+                        principal.delegation,
+                        principal.on_behalf_of,
+                        sorted(principal.scopes)
+                        if principal.scopes is not None
+                        else None,
+                        body.status,
+                        body.service,
+                        body.action,
+                        body.resource_type,
+                        body.resource_id,
+                        body.before_hash,
+                        body.after_hash,
+                    ),
+                ).fetchone(),
+            )["outcome"]
             conn.commit()
         if outcome == "not_found":
             raise HTTPException(status_code=404, detail={"error": "not_found"})
@@ -404,10 +412,14 @@ def register(
             )
             try:
                 # Re-checks workspace and namespace (after alias resolution) inside the ingest transaction.
-                outcome = conn.execute(
-                    "SELECT graph.ingest_cell_event(%s::jsonb, %s) AS outcome",
-                    (event, cell),
-                ).fetchone()["outcome"]
+                # A SELECT without FROM always yields one row.
+                outcome = cast(
+                    DictRow,
+                    conn.execute(
+                        "SELECT graph.ingest_cell_event(%s::jsonb, %s) AS outcome",
+                        (event, cell),
+                    ).fetchone(),
+                )["outcome"]
                 conn.commit()
             except psycopg.errors.InsufficientPrivilege as exc:
                 raise HTTPException(
