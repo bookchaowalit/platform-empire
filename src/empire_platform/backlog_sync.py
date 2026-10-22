@@ -65,6 +65,10 @@ REVIEW_TYPES = {
     "change request": "chore",
     "roadmap change": "chore",
 }
+# Only people with write access can label, but anyone can open an issue and edit its
+# title or close it. Issues by other authors are left out (owner moves them by hand).
+TRUSTED_AUTHORS = {"OWNER", "MEMBER", "COLLABORATOR"}
+SAFE_LOCATION = re.compile(r"[^\w.:/<>\- ]")
 SYNC_FIELDS = ("title", "status", "external_url", "tags", "project", "description")
 CREATE_ONLY = ("priority", "due_date")
 MAX_TITLE = 500
@@ -167,7 +171,12 @@ def github_issues(
             )
             response.raise_for_status()
             items = response.json()["items"]
-            yield from (i for i in items if "pull_request" not in i)
+            yield from (
+                i
+                for i in items
+                if "pull_request" not in i
+                and i.get("author_association") in TRUSTED_AUTHORS
+            )
             if len(items) < 100:
                 break
 
@@ -177,8 +186,9 @@ def github_issues(
 
 def sentry_item(issue: Mapping[str, Any]) -> Item:
     project = issue["project"]["slug"]
-    kind = (issue.get("metadata") or {}).get("type") or issue["title"].split(":")[0]
-    where = issue.get("culprit") or ""
+    kind = SAFE_LOCATION.sub("", (issue.get("metadata") or {}).get("type") or "")[:80]
+    kind = kind or "error"  # never the title: it holds the message
+    where = SAFE_LOCATION.sub("", (issue.get("culprit") or "").split("?")[0])[:120]
     # Type and location only: an exception message can carry personal data (runbook rule 5).
     body: dict[str, Any] = {
         "title": _title(
@@ -385,8 +395,12 @@ class TasksApi:
         response.raise_for_status()
         return response.json()
 
-    def put(self, item: Item, body: Mapping[str, Any]) -> dict[str, Any]:
-        response = self.client.put(self.path(item), json=dict(body))
+    def put(
+        self, item: Item, body: Mapping[str, Any], version: Any = None
+    ) -> dict[str, Any]:
+        """With ``version`` (from the read), a task edited since is not overwritten (412)."""
+        headers = {"If-Match": f'"{version}"'} if version is not None else None
+        response = self.client.put(self.path(item), json=dict(body), headers=headers)
         response.raise_for_status()
         return response.json()
 
@@ -445,7 +459,8 @@ def apply(
                     report.log("would_update", **summary, fields=sorted(diff))
                 else:
                     # TaskCreate needs a title; an unchanged title is not rewritten.
-                    task = api.put(item, {"title": item.body["title"], **diff})["task"]
+                    body = {"title": item.body["title"], **diff}
+                    task = api.put(item, body, task.get("version"))["task"]
                     report.log(
                         "updated",
                         key=item.key,

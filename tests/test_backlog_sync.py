@@ -24,6 +24,7 @@ def issue(number: int, **extra) -> dict:
         "state": "open",
         "state_reason": None,
         "labels": [{"name": "autopilot"}, {"name": "autopilot:todo"}, {"name": "P1"}],
+        "author_association": "OWNER",
         **extra,
     }
 
@@ -98,6 +99,14 @@ def test_github_issue_maps_state_labels_and_priority():
     assert dropped.archive_reason
 
 
+def test_sentry_title_never_falls_back_to_the_message_and_cleans_the_location():
+    bare = {**SENTRY, "metadata": {}, "culprit": "/u/someone@example.com?token=abc"}
+    title = sync.sentry_item(bare).body["title"]
+    assert "@" not in title
+    assert "token=" not in title
+    assert ": error at" in title
+
+
 def test_sentry_item_never_copies_the_exception_message():
     item = sync.sentry_item(SENTRY)
     assert item.key == "sentry/devtools-awesome-atlas/7798457520"
@@ -158,10 +167,15 @@ def test_github_search_skips_pull_requests_and_pages():
             items = [issue(n) for n in range(100)]
             items[0]["pull_request"] = {}
             return httpx.Response(200, json={"items": items})
-        return httpx.Response(200, json={"items": [issue(500)] if page == 2 else []})
+        if page == 2:
+            return httpx.Response(
+                200, json={"items": [issue(500), issue(501, author_association="NONE")]}
+            )
+        return httpx.Response(200, json={"items": []})
 
     found = list(sync.github_issues(mock(handler), ["a", "b"]))
-    assert len(found) == 100  # 99 issues + 1 from page 2; the PR is dropped
+    # 99 issues + 1 from page 2; the PR and the outside author's issue are dropped
+    assert len(found) == 100
     assert all("user:a user:b" in q and "label:autopilot,backlog" in q for q in queries)
 
 
@@ -221,7 +235,10 @@ def api(client, token, world):
             request.method,
             request.url.raw_path.decode(),  # keeps the percent-encoding the sync sent
             content=request.content,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                **{k: v for k, v in request.headers.items() if k == "if-match"},
+            },
         )
         return httpx.Response(response.status_code, content=response.content)
 
@@ -335,3 +352,20 @@ def test_an_api_error_on_one_item_does_not_stop_the_rest(api):
     report = sync.Report()
     sync.apply([bad, good], tasks, report, dry_run=False)
     assert (report.counts["errors"], report.counts["created"]) == (1, 1)
+
+
+def test_a_task_edited_after_the_read_is_not_overwritten(api, client):
+    tasks, owner = api
+    item = unique(sync.github_item(issue(13)))
+    sync.apply([item], tasks, sync.Report(), dry_run=False)
+    task = tasks.get(item)
+    assert task is not None
+    client.patch(
+        f"/v1/tasks/{task['id']}", json={"title": "Owner's edit"}, headers=owner
+    ).raise_for_status()
+    with pytest.raises(httpx.HTTPStatusError) as stale:
+        tasks.put(item, {"title": "From GitHub"}, task["version"])
+    assert stale.value.response.status_code == 412
+    kept = tasks.get(item)
+    assert kept is not None
+    assert kept["title"] == "Owner's edit"

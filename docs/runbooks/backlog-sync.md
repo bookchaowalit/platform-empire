@@ -8,8 +8,8 @@ Keys and labels: architecture-docs `docs/lifecycle/OUTCOME-REVIEW-TO-BACKLOG.md`
 
 | Source | Read | Task key | Fields it owns |
 |---|---|---|---|
-| GitHub | open issues, and issues closed in the last 30 days, labelled `autopilot` or `backlog`, in the owners listed in `BACKLOG_SYNC_GITHUB_OWNERS` | `github/<owner>/<repo>#<n>` | title, URL, labels as tags, project, status (open → `todo`, `autopilot:doing` → `in_progress`, `autopilot:blocked` → `blocked`, closed completed → `done`, closed not planned → `cancelled` + archived) |
-| Sentry | unresolved `error`/`fatal` issues in `SENTRY_ORG` seen in the last 14 days | `sentry/<project>/<issue id>` | title (exception type and location only, never the message), URL, description; a `regressed` issue reopens a done task |
+| GitHub | open issues, and issues closed in the last 30 days, labelled `autopilot` or `backlog`, in the owners listed in `BACKLOG_SYNC_GITHUB_OWNERS`, opened by an owner, member or collaborator (other authors are skipped: anyone can edit their own title or close it) | `github/<owner>/<repo>#<n>` | title, URL, labels as tags, project, status (open → `todo`, `autopilot:doing` → `in_progress`, `autopilot:blocked` → `blocked`, closed completed → `done`, closed not planned → `cancelled` + archived) |
+| Sentry | unresolved `error`/`fatal` issues in `SENTRY_ORG` seen in the last 14 days | `sentry/<project>/<issue id>` | title (exception type and a cleaned location only, never the message), sent with If-Match, URL, description; a `regressed` issue reopens a done task |
 | Files | Markdown found by GitHub code search: outcome reviews (`Review ID` + `Decisions and actions`, status `decided`) and incident reviews (`Incident ID/severity`); `templates/` and `status: template` files are skipped | `outcome-review/<OR-id>#<row>`, `incident/<INC-id>#<row>` | title, file URL, type tags, description; incident status from `done…` |
 
 Priority (labels `P0`–`P3` → 1–4; Sentry fatal 2, error 3) and due date are sent only
