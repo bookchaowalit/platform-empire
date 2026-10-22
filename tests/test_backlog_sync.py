@@ -169,13 +169,25 @@ def test_github_search_skips_pull_requests_and_pages():
             return httpx.Response(200, json={"items": items})
         if page == 2:
             return httpx.Response(
-                200, json={"items": [issue(500), issue(501, author_association="NONE")]}
+                200,
+                json={
+                    "items": [
+                        issue(500),
+                        issue(501, author_association="NONE"),
+                        issue(
+                            502,
+                            author_association="CONTRIBUTOR",
+                            user={"login": "github-actions[bot]"},
+                        ),
+                    ]
+                },
             )
         return httpx.Response(200, json={"items": []})
 
     found = list(sync.github_issues(mock(handler), ["a", "b"]))
-    # 99 issues + 1 from page 2; the PR and the outside author's issue are dropped
-    assert len(found) == 100
+    # 99 + 2 from page 2 (one by the repo's own workflow bot); the PR and the
+    # outside author's issue are dropped
+    assert len(found) == 101
     assert all("user:a user:b" in q and "label:autopilot,backlog" in q for q in queries)
 
 

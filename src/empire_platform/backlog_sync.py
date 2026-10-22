@@ -68,6 +68,8 @@ REVIEW_TYPES = {
 # Only people with write access can label, but anyone can open an issue and edit its
 # title or close it. Issues by other authors are left out (owner moves them by hand).
 TRUSTED_AUTHORS = {"OWNER", "MEMBER", "COLLABORATOR"}
+# Only a workflow in the repository itself can post as this bot (autopilot proposals).
+TRUSTED_BOTS = {"github-actions[bot]"}
 SAFE_LOCATION = re.compile(r"[^\w.:/<>\- ]")
 SYNC_FIELDS = ("title", "status", "external_url", "tags", "project", "description")
 CREATE_ONLY = ("priority", "due_date")
@@ -175,7 +177,10 @@ def github_issues(
                 i
                 for i in items
                 if "pull_request" not in i
-                and i.get("author_association") in TRUSTED_AUTHORS
+                and (
+                    i.get("author_association") in TRUSTED_AUTHORS
+                    or (i.get("user") or {}).get("login") in TRUSTED_BOTS
+                )
             )
             if len(items) < 100:
                 break
