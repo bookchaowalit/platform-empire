@@ -50,9 +50,9 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
 
 ## Turn on (owner actions, in order)
 
-1. Deploy `main` of platform-empire to `tasks-api` (the `/v1/tasks/external/{source}/{external_id:path}`
-   fix, commit `8994be7`). Until then GitHub keys (`github/<owner>/<repo>#<n>`) return 404 on the
-   live API; Sentry keys work today. Railway Wait for CI is stuck, so this deploy waits for the owner.
+1. Done 2026-10-23: `tasks-api` runs `main` (`9a33ea7`, Railway deployed it after CI), so the
+   `/v1/tasks/external/{source}/{external_id:path}` fix (`8994be7`) is live: a GitHub key such as
+   `github/<owner>/<repo>%23<n>` reaches the route (401 without a token, not 404).
 2. Provision the automation on the hosted workspace:
    `empire-automations provision --workspace <slug> --only backlog-sync --tokens <dir>` with the
    production key (as for the other automations), and put the token in Infisical `/empire-platform`
