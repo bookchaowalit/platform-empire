@@ -28,6 +28,7 @@ exit code is 1 when anything failed, 2 when configuration is missing.
 Environment (nothing secret is printed):
     BACKLOG_SYNC_GITHUB_TOKEN   read-only issues + contents + code search on the owners
     BACKLOG_SYNC_GITHUB_OWNERS  comma list (default: bookchaowalit)
+    BACKLOG_SYNC_BOT_REPOS      repos whose github-actions[bot] issues count (autopilot repos)
     SENTRY_AUTH_TOKEN, SENTRY_ORG (default personal-yu0)
     EMPIRE_TASKS_API_URL, BACKLOG_SYNC_TOKEN   (writes; optional in --dry-run)
     MONITOR_URL, HEARTBEAT_TOKEN               optional heartbeat ``backlog-sync``
@@ -68,8 +69,11 @@ REVIEW_TYPES = {
 # Only people with write access can label, but anyone can open an issue and edit its
 # title or close it. Issues by other authors are left out (owner moves them by hand).
 TRUSTED_AUTHORS = {"OWNER", "MEMBER", "COLLABORATOR"}
-# Only a workflow in the repository itself can post as this bot (autopilot proposals).
-TRUSTED_BOTS = {"github-actions[bot]"}
+# Autopilot proposals are opened by the repository's own workflow as this bot. Any workflow
+# with issues:write can post as it, so it is trusted only in the repositories that run the
+# autopilot (BACKLOG_SYNC_BOT_REPOS).
+WORKFLOW_BOT = "github-actions[bot]"
+AUTOPILOT_REPOS = "bookchaowalit-website/productivity-tracking-web"
 SAFE_LOCATION = re.compile(r"[^\w.:/<>\- ]")
 SYNC_FIELDS = ("title", "status", "external_url", "tags", "project", "description")
 CREATE_ONLY = ("priority", "due_date")
@@ -156,8 +160,17 @@ def github_item(issue: Mapping[str, Any]) -> Item:
     return Item("github", f"{repo}#{issue['number']}", body, archive)
 
 
+def trusted(issue: Mapping[str, Any], bot_repos: Iterable[str]) -> bool:
+    if issue.get("author_association") in TRUSTED_AUTHORS:
+        return True
+    repo = issue["repository_url"].split("/repos/", 1)[1]
+    return (issue.get("user") or {}).get("login") == WORKFLOW_BOT and repo in set(
+        bot_repos
+    )
+
+
 def github_issues(
-    gh: httpx.Client, owners: Iterable[str]
+    gh: httpx.Client, owners: Iterable[str], bot_repos: Iterable[str] = ()
 ) -> Iterator[Mapping[str, Any]]:
     """Open issues, and issues closed in the last 30 days, labelled autopilot or backlog."""
     users = " ".join(f"user:{o}" for o in owners)
@@ -174,13 +187,7 @@ def github_issues(
             response.raise_for_status()
             items = response.json()["items"]
             yield from (
-                i
-                for i in items
-                if "pull_request" not in i
-                and (
-                    i.get("author_association") in TRUSTED_AUTHORS
-                    or (i.get("user") or {}).get("login") in TRUSTED_BOTS
-                )
+                i for i in items if "pull_request" not in i and trusted(i, bot_repos)
             )
             if len(items) < 100:
                 break
@@ -496,11 +503,18 @@ def collect(
     owners: list[str],
     org: str,
     report: Report,
+    bot_repos: Iterable[str] = (),
 ) -> list[Item]:
+    def need(client: httpx.Client | None) -> httpx.Client:
+        assert client is not None  # main() refuses to start without the token
+        return client
+
     readers: dict[str, Callable[[], Iterable[Item]]] = {
-        "github": lambda: (github_item(i) for i in github_issues(gh, owners)),  # type: ignore[arg-type]
-        "sentry": lambda: (sentry_item(i) for i in sentry_issues(sentry, org)),  # type: ignore[arg-type]
-        "files": lambda: file_items(gh, owners, report),  # type: ignore[arg-type]
+        "github": lambda: (
+            github_item(i) for i in github_issues(need(gh), owners, bot_repos)
+        ),
+        "sentry": lambda: (sentry_item(i) for i in sentry_issues(need(sentry), org)),
+        "files": lambda: file_items(need(gh), owners, report),
     }
     items: list[Item] = []
     for source in sources:
@@ -596,6 +610,11 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         for o in env.get("BACKLOG_SYNC_GITHUB_OWNERS", "bookchaowalit").split(",")
         if o.strip()
     ]
+    bot_repos = [
+        r.strip()
+        for r in env.get("BACKLOG_SYNC_BOT_REPOS", AUTOPILOT_REPOS).split(",")
+        if r.strip()
+    ]
     report = Report()
     gh = (
         _client(GITHUB_API, gh_token, Accept="application/vnd.github+json")
@@ -610,7 +629,13 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     )
     try:
         items = collect(
-            sources, gh, sentry, owners, env.get("SENTRY_ORG", "personal-yu0"), report
+            sources,
+            gh,
+            sentry,
+            owners,
+            env.get("SENTRY_ORG", "personal-yu0"),
+            report,
+            bot_repos,
         )
         apply(items, TasksApi(tasks) if tasks else None, report, dry_run=args.dry_run)
     finally:

@@ -8,7 +8,7 @@ Keys and labels: architecture-docs `docs/lifecycle/OUTCOME-REVIEW-TO-BACKLOG.md`
 
 | Source | Read | Task key | Fields it owns |
 |---|---|---|---|
-| GitHub | open issues, and issues closed in the last 30 days, labelled `autopilot` or `backlog`, in the owners listed in `BACKLOG_SYNC_GITHUB_OWNERS`, opened by an owner, member, collaborator or the repository's own `github-actions[bot]` (other authors are skipped: anyone can edit their own title or close it) | `github/<owner>/<repo>#<n>` | title, URL, labels as tags, project, status (open → `todo`, `autopilot:doing` → `in_progress`, `autopilot:blocked` → `blocked`, closed completed → `done`, closed not planned → `cancelled` + archived) |
+| GitHub | open issues, and issues closed in the last 30 days, labelled `autopilot` or `backlog`, in the owners listed in `BACKLOG_SYNC_GITHUB_OWNERS`, opened by an owner, member, collaborator or `github-actions[bot]` in an autopilot repository listed in `BACKLOG_SYNC_BOT_REPOS` (other authors are skipped: anyone can edit their own title or close it) | `github/<owner>/<repo>#<n>` | title, URL, labels as tags, project, status (open → `todo`, `autopilot:doing` → `in_progress`, `autopilot:blocked` → `blocked`, closed completed → `done`, closed not planned → `cancelled` + archived) |
 | Sentry | unresolved `error`/`fatal` issues in `SENTRY_ORG` seen in the last 14 days | `sentry/<project>/<issue id>` | title (exception type and a cleaned location only, never the message), sent with If-Match, URL, description; a `regressed` issue reopens a done task |
 | Files | Markdown found by GitHub code search: outcome reviews (`Review ID` + `Decisions and actions`, status `decided`) and incident reviews (`Incident ID/severity`); `templates/` and `status: template` files are skipped | `outcome-review/<OR-id>#<row>`, `incident/<INC-id>#<row>` | title, file URL, type tags, description; incident status from `done…` |
 
@@ -42,6 +42,7 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
 | `BACKLOG_SYNC_TOKEN` | minted for automation `backlog-sync` (owner action), then renewed by `token-rotate` once the target below is in `contracts/automations/v1/deployments.json` |
 | `BACKLOG_SYNC_GITHUB_TOKEN` | fine-grained PAT, read-only Issues + Contents + Metadata on every owner org (owner action) |
 | `BACKLOG_SYNC_GITHUB_OWNERS` | `bookchaowalit` plus every `bookchaowalit-*` org; never `Happy-Teeth` |
+| `BACKLOG_SYNC_BOT_REPOS` | repos that run the autopilot (default `bookchaowalit-website/productivity-tracking-web`); add one when Wave 6 adds a repo |
 | `SENTRY_AUTH_TOKEN` | Infisical `/sentry` (reads issues; checked 2026-10-23) |
 | `SENTRY_ORG` | `personal-yu0` |
 | `MONITOR_URL`, `HEARTBEAT_TOKEN` | Infisical `/monitoring` |

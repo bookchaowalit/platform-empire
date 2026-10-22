@@ -179,14 +179,20 @@ def test_github_search_skips_pull_requests_and_pages():
                             author_association="CONTRIBUTOR",
                             user={"login": "github-actions[bot]"},
                         ),
+                        issue(  # the same bot in a repo that is not an autopilot repo
+                            503,
+                            author_association="CONTRIBUTOR",
+                            user={"login": "github-actions[bot]"},
+                            repository_url="https://api.github.com/repos/bookchaowalit/other",
+                        ),
                     ]
                 },
             )
         return httpx.Response(200, json={"items": []})
 
-    found = list(sync.github_issues(mock(handler), ["a", "b"]))
-    # 99 + 2 from page 2 (one by the repo's own workflow bot); the PR and the
-    # outside author's issue are dropped
+    found = list(sync.github_issues(mock(handler), ["a", "b"], [OWNER_REPO]))
+    # 99 + 2 from page 2 (one by the autopilot repo's workflow bot); the PR, the
+    # outside author's issue and the bot outside an autopilot repo are dropped
     assert len(found) == 101
     assert all("user:a user:b" in q and "label:autopilot,backlog" in q for q in queries)
 
