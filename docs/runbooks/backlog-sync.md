@@ -48,6 +48,34 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
 | `MONITOR_URL`, `HEARTBEAT_TOKEN` | Infisical `/monitoring` |
 | `SENTRY_DSN` | as the other services |
 
+## State (2026-10-24, session oa-remainder)
+
+- Automation `backlog-sync` provisioned on the hosted `owner` workspace (scopes `tasks.task:read`,
+  `tasks.task:write`, `tasks.archive:write`) with `hosted_rotate.provision_mint` run under the
+  `token-rotate` service environment; the token is in Infisical `/empire-platform` as
+  `EMPIRE_AUTOMATION_TOKEN_BACKLOG_SYNC` and on the Railway service as `BACKLOG_SYNC_TOKEN`.
+  `reporting-reader` (for `task diary`) minted the same way: `EMPIRE_AUTOMATION_TOKEN_REPORTING_READER`.
+  Both are `deployments.json` targets, so the weekly `token-rotate` renews them.
+- Railway service `backlog-sync` (project `platform-empire`) created through the API to match
+  `.railway/railway.ts`: cron `5 * * * *`, restart `NEVER`, start command
+  `empire-backlog-sync --sources sentry`. Variables as in the table, except
+  `BACKLOG_SYNC_GITHUB_TOKEN` (not set).
+- **Sources:** Sentry is live. GitHub and Files are **off**: both need `BACKLOG_SYNC_GITHUB_TOKEN`,
+  and the only GitHub token in Infisical (`/github` `GITHUB_PERSONAL_ACCESS_TOKEN`) is a classic PAT
+  with admin scopes, which this job must not use. After the owner stores the read-only
+  fine-grained PAT (step 3), set it on the service, run
+  `railway run --service backlog-sync -- empire-backlog-sync --dry-run --sources github,files`,
+  then drop `--sources sentry` from the start command.
+- **Source connection:** `serviceConnect` to `bookchaowalit/platform-empire` is refused ("User does
+  not have access to the repo") for both the owner CLI session and the Infisical Railway token, so
+  the service runs a `railway up` of a clean `git archive` of CI-green `main` `002c165` and does
+  not redeploy on push. Owner action: Railway → service `backlog-sync` → Settings → Source →
+  connect `bookchaowalit/platform-empire` `main` (re-authorise the Railway GitHub app if asked)
+  and enable Wait for CI.
+- Runs: dry run 10 `would_create` (Sentry), live 10 `created`, re-run 10 `unchanged`, 0 errors.
+- Rollback: delete the Railway service `backlog-sync` (the tasks stay in tasks-api), or remove
+  `tasks.task:write` by revoking the delegation (`platform.delegations.revoked_at`).
+
 ## Turn on (owner actions, in order)
 
 1. Done 2026-10-23: `tasks-api` runs `main` (`9a33ea7`, Railway deployed it after CI), so the
