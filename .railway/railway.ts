@@ -52,12 +52,12 @@ export default defineRailway(() => {
   });
 
   // Hourly cron run (EMPIRE_SERVICE=backlog-sync): GitHub issues, Sentry errors, outcome reviews
-  // and incidents -> one task each (empire_platform.backlog_sync). 5 * * * * UTC. Started
-  // 2026-10-24 with --sources sentry only: github and files need the read-only
-  // BACKLOG_SYNC_GITHUB_TOKEN (owner action), see docs/runbooks/backlog-sync.md.
+  // and incidents -> one task each (empire_platform.backlog_sync). 5 * * * * UTC. All three
+  // sources since 2026-10-25 (read-only fine-grained BACKLOG_SYNC_GITHUB_TOKEN), see
+  // docs/runbooks/backlog-sync.md.
   const backlogSync = service("backlog-sync", {
     source: github,
-    startCommand: "empire-backlog-sync --sources sentry",
+    startCommand: "empire-backlog-sync",
     deploy: { cronSchedule: "5 * * * *", restartPolicyType: "NEVER" },
   });
 

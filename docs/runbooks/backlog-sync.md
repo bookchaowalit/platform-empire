@@ -59,8 +59,8 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
 - Railway service `backlog-sync` (project `platform-empire`) created through the API to match
   `.railway/railway.ts`: cron `5 * * * *`, restart `NEVER`, start command
   `empire-backlog-sync --sources sentry`. Variables as in the table, except
-  `BACKLOG_SYNC_GITHUB_TOKEN` (not set).
-- **Sources:** Sentry is live. GitHub and Files are **off**: both need `BACKLOG_SYNC_GITHUB_TOKEN`,
+  `BACKLOG_SYNC_GITHUB_TOKEN` (set 2026-10-25).
+- **Sources (2026-10-24, superseded by the 2026-10-25 entry below):** Sentry was live; GitHub and Files were off: both need `BACKLOG_SYNC_GITHUB_TOKEN`,
   and the only GitHub token in Infisical (`/github` `GITHUB_PERSONAL_ACCESS_TOKEN`) is a classic PAT
   with admin scopes, which this job must not use. After the owner stores the read-only
   fine-grained PAT (step 3), set it on the service, run
@@ -73,6 +73,19 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
   connect `bookchaowalit/platform-empire` `main` (re-authorise the Railway GitHub app if asked)
   and enable Wait for CI.
 - Runs: dry run 10 `would_create` (Sentry), live 10 `created`, re-run 10 `unchanged`, 0 errors.
+- **2026-10-25: all sources on.** The owner stored a fine-grained, read-only PAT (code, issues,
+  metadata; resource owner `bookchaowalit`, with expiry) as Infisical `/github`
+  `BACKLOG_SYNC_GITHUB_TOKEN`; it is set on the service and the start command is now
+  `empire-backlog-sync` (redeployed from CI-green `main` `1290e78`). Dry run `--sources github,files`:
+  14 `would_create`, 0 errors. Live: 14 GitHub issues `created`, Sentry 11 `unchanged`, files 0;
+  re-run 25 `unchanged`. Files 0 is real: the three `OUTCOME-REVIEW-001.md` are `draft`, the other
+  code-search hits are templates, this runbook, or incident reviews with no decided actions.
+- **Reach of the PAT:** every public repo in the 12 `bookchaowalit-*` orgs and all repos of the
+  personal account (private included) are readable. **Private repos in the orgs return 404**
+  (`bookchaowalit-freelance` 12, `bookchaowalit-agency` 2, `bookchaowalit-ai` 2 and one `*-hub` repo in
+  each other org): a fine-grained PAT owned by the user cannot read org-private repos, so their issues
+  are not synced. To include them, create a PAT with each org as resource owner (the org must allow
+  fine-grained tokens) or install a GitHub App on the orgs.
 - Rollback: delete the Railway service `backlog-sync` (the tasks stay in tasks-api), or remove
   `tasks.task:write` by revoking the delegation (`platform.delegations.revoked_at`).
 
