@@ -47,13 +47,30 @@ Exit 1 when an item failed (the rest still ran), 2 when configuration is missing
 
 Schedule: `30 2 * * *` UTC (09:30 Bangkok), after Stripe's Monday payouts land.
 
+## State (2026-10-25)
+
+- Code on `main` (`6d19c6c`, CI green): job, tests, automation `stripe-reconciler` in
+  `automations.json`, both token targets in `deployments.json`, `.railway/railway.ts` service.
+- Railway service `stripe-reconcile` (id `4104b44f-0516-4786-a887-5a3b7c370465`) created empty in
+  project `platform-empire`, with every variable above **except `STRIPE_RECONCILER_TOKEN`**. No
+  deployment, no start command, no cron yet.
+- **Not provisioned:** the automation token (step 1). Minting a token with write grants is an
+  owner decision; it was not run.
+- Live dry run (read-only, owner-mcp token for the cell reads):
+  `--dry-run --payout-status in_transit` → `po_1USgOuKKW2mNhAm6ecpay0kU` ฿9.82 would reconcile as
+  `exception`: amount equals its balance transactions, but the ฿10 readiness payment
+  (`txn_3UNxnZKKW2mNhAm60uf4gdPz`, before the webhook existed) has no ledger row. 0 errors.
+- Do **not** run the full hosted rotation to mint it: a dry run of that plans renewals for ~20
+  other automations. Mint only this one (`provision_mint(...)(["stripe-reconciler"])`).
+
 ## Turn on
 
 1. Provision `stripe-reconciler` on the hosted `owner` workspace the same way as
    `backlog-sync` (`hosted_rotate.provision_mint` under the `token-rotate` environment); store
    the token in Infisical `/empire-platform` as `EMPIRE_AUTOMATION_TOKEN_STRIPE_RECONCILER`.
-2. Create the Railway cron service `stripe-reconcile` in project `platform-empire` to match
-   `.railway/railway.ts`, set the variables above, deploy CI-green `main`.
+2. Railway service `stripe-reconcile`: set `STRIPE_RECONCILER_TOKEN`, start command
+   `empire-stripe-reconcile`, restart `NEVER`, cron `30 2 * * *`, then deploy CI-green `main`
+   (`railway up` of a clean `git archive`, like `backlog-sync`, until the source is connected).
 3. `railway run --service stripe-reconcile -- empire-stripe-reconcile --dry-run`, read it, then let
    the cron write.
 4. Add the heartbeat `{ job: 'stripe-reconcile', maxAgeHours: 26 }` to platform-uptime-worker
