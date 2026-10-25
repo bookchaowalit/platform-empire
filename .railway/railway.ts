@@ -61,8 +61,18 @@ export default defineRailway(() => {
     deploy: { cronSchedule: "5 * * * *", restartPolicyType: "NEVER" },
   });
 
+  // Daily cron run (EMPIRE_SERVICE=stripe-reconcile): Stripe fees onto crm-income ledger rows,
+  // each paid payout -> transfer + fee transactions and one reconciliation
+  // (empire_platform.stripe_reconcile). 30 2 * * * UTC = 09:30 Bangkok. See
+  // docs/runbooks/stripe-reconcile.md.
+  const stripeReconcile = service("stripe-reconcile", {
+    source: github,
+    startCommand: "empire-stripe-reconcile",
+    deploy: { cronSchedule: "30 2 * * *", restartPolicyType: "NEVER" },
+  });
+
   return project("platform-empire", {
     variables: { managed: false },
-    resources: [tasksApi, tasksPublisher, recurringGen, tokenRotate, backlogSync],
+    resources: [tasksApi, tasksPublisher, recurringGen, tokenRotate, backlogSync, stripeReconcile],
   });
 });

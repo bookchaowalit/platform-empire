@@ -67,6 +67,16 @@ re-run writes nothing; priority and due date are set only on create. It runs as 
 `tasks.archive:write`). Host, schedule and setup: [runbook](docs/runbooks/backlog-sync.md)
 and architecture-docs ADR-0006.
 
+## Stripe reconcile
+
+`empire-stripe-reconcile [--dry-run]` (`src/empire_platform/stripe_reconcile.py`) finishes the
+Order-to-Cash trail after the crm-api Stripe webhook (EOS gap G2): it writes the Stripe fee and
+net onto each webhook revenue row in the crm-income ledger, and turns each paid Stripe payout into
+a transfer and a fee transaction plus one reconciliation (`source_ref` = payout id), marking the
+ledger rows `cash_reconciled`. It runs daily as the `stripe-reconciler` automation
+(`finance-accounts`, `transactions`, `reconciliations` read/write). Host, variables and setup:
+[runbook](docs/runbooks/stripe-reconcile.md).
+
 ## Layout
 
 | Path | Contents |

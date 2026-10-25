@@ -1156,6 +1156,21 @@
         "tasks.task:read",
         "tasks.task:write"
       ]
+    },
+    {
+      "id": "stripe-reconciler",
+      "writers": [
+        "src/empire_platform/stripe_reconcile.py"
+      ],
+      "does": "creates the Stripe balance and payout bank accounts, one transfer and one fee transaction per Stripe payout, and one reconciliation per payout (EOS gap G2, 2026-10-25); ledger notes are written with the CRM's own token, not this one",
+      "scopes": [
+        "finance-accounts.account:read",
+        "finance-accounts.account:write",
+        "reconciliations.reconciliation:read",
+        "reconciliations.reconciliation:write",
+        "transactions.transaction:read",
+        "transactions.transaction:write"
+      ]
     }
   ],
   "not_automations": []

@@ -26,6 +26,8 @@
     {"automation": "owner-cli", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_OWNER_CLI"},
     {"automation": "backlog-sync", "provider": "railway", "checkout": "platform-empire", "service": "backlog-sync", "variable": "BACKLOG_SYNC_TOKEN"},
     {"automation": "backlog-sync", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_BACKLOG_SYNC"},
-    {"automation": "reporting-reader", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_REPORTING_READER"}
+    {"automation": "reporting-reader", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_REPORTING_READER"},
+    {"automation": "stripe-reconciler", "provider": "railway", "checkout": "platform-empire", "service": "stripe-reconcile", "variable": "STRIPE_RECONCILER_TOKEN"},
+    {"automation": "stripe-reconciler", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_STRIPE_RECONCILER"}
   ]
 }

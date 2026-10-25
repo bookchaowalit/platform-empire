@@ -32,6 +32,7 @@ empire-neon = "empire_platform.neon:main"
 empire-cells = "empire_platform.cells:main"
 empire-recurring = "empire_platform.recurring:main"
 empire-backlog-sync = "empire_platform.backlog_sync:main"
+empire-stripe-reconcile = "empire_platform.stripe_reconcile:main"
 
 [build-system]
 requires = ["setuptools>=69"]
