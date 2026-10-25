@@ -349,8 +349,9 @@ def reconcile_payout(
     fees = _major(sum(t["fee"] for t in txns), currency)
     difference = round(expected - paid, 2)
     status = "matched" if abs(difference) < 0.005 and not unmatched else "exception"
-    destination = (
-        payout.get("destination") if isinstance(payout.get("destination"), dict) else {}
+    raw_destination = payout.get("destination")
+    destination: dict[str, Any] = (
+        raw_destination if isinstance(raw_destination, dict) else {}
     )
     bank = f"{destination.get('bank_name') or 'Bank'} ••{destination.get('last4') or '????'}"
     summary = {
