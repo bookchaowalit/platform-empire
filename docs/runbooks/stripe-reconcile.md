@@ -47,21 +47,25 @@ Exit 1 when an item failed (the rest still ran), 2 when configuration is missing
 
 Schedule: `30 2 * * *` UTC (09:30 Bangkok), after Stripe's Monday payouts land.
 
-## State (2026-10-25)
+## State (2026-10-25, live)
 
-- Code on `main` (`6d19c6c`, CI green): job, tests, automation `stripe-reconciler` in
+- Code on `main` (`82772a7`, CI green): job, tests, automation `stripe-reconciler` in
   `automations.json`, both token targets in `deployments.json`, `.railway/railway.ts` service.
-- Railway service `stripe-reconcile` (id `4104b44f-0516-4786-a887-5a3b7c370465`) created empty in
-  project `platform-empire`, with every variable above **except `STRIPE_RECONCILER_TOKEN`**. No
-  deployment, no start command, no cron yet.
-- **Not provisioned:** the automation token (step 1). Minting a token with write grants is an
-  owner decision; it was not run.
-- Live dry run (read-only, owner-mcp token for the cell reads):
-  `--dry-run --payout-status in_transit` → `po_1USgOuKKW2mNhAm6ecpay0kU` ฿9.82 would reconcile as
+- Automation `stripe-reconciler` provisioned on the hosted `owner` workspace (owner-approved
+  2026-10-25) with `hosted_rotate.provision_mint` under the `token-rotate` service environment,
+  only this automation (no full rotation). Token expires 2026-11-24; the weekly `token-rotate`
+  renews it. Stored in Infisical `/empire-platform` as `EMPIRE_AUTOMATION_TOKEN_STRIPE_RECONCILER`
+  (written with the token-rotate machine identity) and on the Railway service as
+  `STRIPE_RECONCILER_TOKEN`.
+- Railway service `stripe-reconcile` (id `4104b44f-0516-4786-a887-5a3b7c370465`): start command
+  `empire-stripe-reconcile`, restart `NEVER`, cron `30 2 * * *`; deployed from a clean
+  `git archive` of `82772a7` (no source connection, so a push does not redeploy).
+- Dry runs with the service variables: `paid` → nothing to do, 0 errors;
+  `--payout-status in_transit` → `po_1USgOuKKW2mNhAm6ecpay0kU` ฿9.82 would reconcile as
   `exception`: amount equals its balance transactions, but the ฿10 readiness payment
-  (`txn_3UNxnZKKW2mNhAm60uf4gdPz`, before the webhook existed) has no ledger row. 0 errors.
-- Do **not** run the full hosted rotation to mint it: a dry run of that plans renewals for ~20
-  other automations. Mint only this one (`provision_mint(...)(["stripe-reconciler"])`).
+  (`txn_3UNxnZKKW2mNhAm60uf4gdPz`, before the webhook existed) has no ledger row. Expected.
+- First scheduled write: 2026-10-26 02:30 UTC, after that payout lands.
+- Open: heartbeat in platform-uptime-worker (step 4) after the first good scheduled run.
 
 ## Turn on
 
