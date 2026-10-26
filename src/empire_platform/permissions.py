@@ -165,6 +165,19 @@ INTAKE_OWNER = (
     "intake.intake-event:read",
     "intake.intake-event:write",
     "intake.intake-event:delete",
+    # X feed (2026-10-26): posts, per-pull sightings, the collector's watchlist and query plan.
+    "intake.x-post:read",
+    "intake.x-post:write",
+    "intake.x-post:delete",
+    "intake.x-sighting:read",
+    "intake.x-sighting:write",
+    "intake.x-sighting:delete",
+    "intake.x-watch:read",
+    "intake.x-watch:write",
+    "intake.x-watch:delete",
+    "intake.x-query:read",
+    "intake.x-query:write",
+    "intake.x-query:delete",
 )
 
 AUTOMATION_OWNER = (
