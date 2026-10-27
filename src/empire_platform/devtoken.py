@@ -46,6 +46,7 @@ DEFAULT_AUDIENCES = (
     "health-api",
     "time-api",
     "radar-api",
+    "offers-api",
     "finance-accounts-api",
     "transactions-api",
     "budgets-api",

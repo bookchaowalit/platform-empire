@@ -248,6 +248,18 @@ RADAR_OWNER = (
     "radar.opportunity-status:delete",
 )
 
+OFFERS_OWNER = (
+    "offers.offer:read",
+    "offers.offer:write",
+    "offers.offer:delete",
+    "offers.offer-price:read",
+    "offers.offer-price:write",
+    "offers.offer-price:delete",
+    "offers.offer-listing:read",
+    "offers.offer-listing:write",
+    "offers.offer-listing:delete",
+)
+
 # Owner permissions per cell; `empire-cells grant` adds them to a workspace's owner role.
 CELL_OWNERS: dict[str, tuple[str, ...]] = {}
 
@@ -357,3 +369,4 @@ FINANCE_OWNERS: dict[str, tuple[str, ...]] = {
 }
 CELL_OWNERS.update(FINANCE_OWNERS)
 CELL_OWNERS["radar"] = RADAR_OWNER
+CELL_OWNERS["offers"] = OFFERS_OWNER
