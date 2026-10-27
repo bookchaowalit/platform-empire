@@ -172,6 +172,7 @@ def test_production_tokens(cluster, monkeypatch, tmp_path):
     assert cells.main(["grant", "--workspace", slug, "--cell", "health"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "time"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "radar"]) == 0
+    assert cells.main(["grant", "--workspace", slug, "--cell", "offers"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "finance-accounts"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "transactions"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "budgets"]) == 0
