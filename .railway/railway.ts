@@ -3,8 +3,8 @@ import { defineRailway, project, service } from "railway/iac";
 // empire-platform owns only its own services in the shared project.
 // Variables stay unmanaged: secrets live in Railway, never in this file.
 // Every service builds from the repository Dockerfile and picks its process
-// from EMPIRE_SERVICE (api, publisher, recurring, or rotate); every service but the
-// two crons answers /health.
+// from EMPIRE_SERVICE (api, publisher, recurring, or rotate); only tasks-api is a server and
+// answers /health, the others are crons.
 export const partial = "empire-platform";
 
 // Every service deploys from GitHub main after CI passes (Railway Wait for CI, 2026-10-18).
@@ -22,10 +22,13 @@ export default defineRailway(() => {
     healthcheck: "/health",
     healthcheckTimeout: 60,
   });
+  // Hourly cron run (2026-10-28): publishes up to 1000 outbox events, then exits. It used to loop
+  // every 5 s (PUBLISH_INTERVAL), which kept the empire-platform Neon compute awake and used up the
+  // free monthly compute quota. 5 * * * * shares the backlog-sync wake; graph events can lag an hour.
   const tasksPublisher = service("tasks-publisher", {
     source: github,
-    healthcheck: "/health",
-    healthcheckTimeout: 60,
+    startCommand: "empire-publish --batch 1000",
+    deploy: { cronSchedule: "5 * * * *", restartPolicyType: "NEVER" },
   });
 
   // The hosted remote MCP (empire-mcp, Clerk OAuth) was never deployed and was retired on
