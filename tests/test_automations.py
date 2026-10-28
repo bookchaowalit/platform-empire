@@ -315,13 +315,21 @@ def test_deploy_verifier_only_reads():
 
 def test_x_feed_collector_reaches_only_the_x_feed():
     # An external bot (Grok, Chief Data) holds this token: no other intake source, no other cell.
-    collector = next(a for a in REGISTRY["automations"] if a["id"] == "x-feed-collector")
+    collector = next(
+        a for a in REGISTRY["automations"] if a["id"] == "x-feed-collector"
+    )
     assert collector["scopes"]
     assert all(scope.startswith("intake.x-") for scope in collector["scopes"])
     assert not any(scope.endswith(":delete") for scope in collector["scopes"])
     # The lake export marks pulls through intake-api's x-feed routes (intake.x-sighting:write), so it
     # needs no intake.intake:* right, which would reach every other source's intake rows.
-    exporter = next(a for a in REGISTRY["automations"] if a["id"] == "x-feed-lake-export")
+    exporter = next(
+        a for a in REGISTRY["automations"] if a["id"] == "x-feed-lake-export"
+    )
     assert all(scope.startswith("intake.x-") for scope in exporter["scopes"])
-    assert {s for s in exporter["scopes"] if s.endswith(":write")} == {"intake.x-sighting:write"}
-    assert "intake.x-sighting:write" not in collector["scopes"]  # the bot cannot mark its own pulls exported
+    assert {s for s in exporter["scopes"] if s.endswith(":write")} == {
+        "intake.x-sighting:write"
+    }
+    assert (
+        "intake.x-sighting:write" not in collector["scopes"]
+    )  # the bot cannot mark its own pulls exported
