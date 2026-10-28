@@ -315,6 +315,8 @@
         "intake.intake-event:read",
         "intake.intake:read",
         "intake.source:read",
+        "intake.x-post:read",
+        "intake.x-sighting:read",
         "notifications.notification:read",
         "notifications.rule:read",
         "operating.cycle-goal-link:read",
@@ -870,6 +872,34 @@
       ]
     },
     {
+      "id": "x-feed-collector",
+      "writers": [
+        "Grok Bot Chief Data (external, HTTPS push; see bookchaowalit/platform-intake-api docs/x-feed-ingest.md)"
+      ],
+      "does": "pushes X pulls (POST /v1/x-feed/pulls) and keeps the X watchlist and query plan in the intake cell; cannot read or write any other intake source",
+      "scopes": [
+        "intake.x-post:read",
+        "intake.x-post:write",
+        "intake.x-query:read",
+        "intake.x-query:write",
+        "intake.x-sighting:read",
+        "intake.x-watch:read",
+        "intake.x-watch:write"
+      ]
+    },
+    {
+      "id": "x-feed-lake-export",
+      "writers": [
+        "bookchaowalit/data-lake-pipelines:infra/scripts/sync/x_feed_lake_export.py"
+      ],
+      "does": "lists landed X pulls in the intake cell, exports them to the lake (Bronze social/x_feed) and marks each pull exported; no right on any other intake source",
+      "scopes": [
+        "intake.x-post:read",
+        "intake.x-sighting:read",
+        "intake.x-sighting:write"
+      ]
+    },
+    {
       "id": "solo-web",
       "writers": [
         "bookchaowalit/life-dashboard-web:lib/cells.ts"
@@ -1048,6 +1078,14 @@
         "intake.intake:write",
         "intake.source:read",
         "intake.source:write",
+        "intake.x-post:read",
+        "intake.x-post:write",
+        "intake.x-query:read",
+        "intake.x-query:write",
+        "intake.x-sighting:read",
+        "intake.x-sighting:write",
+        "intake.x-watch:read",
+        "intake.x-watch:write",
         "investments.investment:read",
         "investments.investment:write",
         "investments.market-price:read",
