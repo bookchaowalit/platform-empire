@@ -1,4 +1,5 @@
 """Platform service audiences (deployed 2026-10-29) must be in the default token audiences."""
+
 from empire_platform.devtoken import DEFAULT_AUDIENCES
 
 PLATFORM_AUDIENCES = (
