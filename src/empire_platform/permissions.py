@@ -383,3 +383,66 @@ FINANCE_OWNERS: dict[str, tuple[str, ...]] = {
 CELL_OWNERS.update(FINANCE_OWNERS)
 CELL_OWNERS["radar"] = RADAR_OWNER
 CELL_OWNERS["offers"] = OFFERS_OWNER
+
+# Book Platform services (bookchaowalit-backend/platform-*, live 2026-10-29) check concrete
+# shared scopes such as ``messages:write``. platform-identity mints a shared scope only after
+# platform.authorize allows the mapped canonical permission (IDENTITY_SHARED_SCOPE_PERMISSIONS_JSON
+# is generated from this map), so the owner role holds every mapped permission.
+PLATFORM_SHARED_SCOPES: dict[str, str] = {
+    "messages:read": "communication.message:read",
+    "messages:write": "communication.message:write",
+    "opt-outs:write": "communication.opt-out:write",
+    "files:read": "media.file:read",
+    "files:write": "media.file:write",
+    "cache:read": "data.cache:read",
+    "cache:write": "data.cache:write",
+    "counters:write": "data.counter:write",
+    "documents:read": "data.document:read",
+    "documents:write": "data.document:write",
+    "quotas:write": "data.quota:write",
+    "quotas:reserve": "data.quota-reservation:write",
+    "quotas:settle": "data.quota-settlement:write",
+    "jobs:read": "workflow.job:read",
+    "jobs:write": "workflow.job:write",
+    "jobs:work": "workflow.job-work:write",
+    "catalog:read": "commerce.catalog:read",
+    "catalog:write": "commerce.catalog:write",
+    "cart:read": "commerce.cart:read",
+    "cart:write": "commerce.cart:write",
+    "orders:read": "commerce.order:read",
+    "orders:write": "commerce.order:write",
+    "promotions:read": "commerce.promotion:read",
+    "promotions:write": "commerce.promotion:write",
+    "rates:read": "logistics.rate:read",
+    "shipments:read": "logistics.shipment:read",
+    "shipments:write": "logistics.shipment:write",
+    "labels:write": "logistics.label:write",
+    "tracking:write": "logistics.tracking:write",
+    "flags:read": "developer.flag:read",
+    "flags:write": "developer.flag:write",
+    # security-api audit log (live 2026-11-03). First holder: identity service client
+    # posture-monitor (scope audit:write), registered in IDENTITY_SERVICE_CLIENTS_JSON.
+    "audit:read": "security.audit:read",
+    "audit:write": "security.audit:write",
+    # security-api secret references: no caller yet. Mapped so the owner can be granted them;
+    # identity-api picks them up when IDENTITY_SHARED_SCOPE_PERMISSIONS_JSON is regenerated.
+    "references:read": "security.secret-reference:read",
+    "references:write": "security.secret-reference:write",
+}
+
+for _service in (
+    "communication",
+    "media",
+    "data",
+    "workflow",
+    "commerce",
+    "logistics",
+    "developer",
+    "security",
+):
+    CELL_OWNERS[_service] = tuple(
+        sorted(
+            p for p in PLATFORM_SHARED_SCOPES.values() if p.startswith(_service + ".")
+        )
+    )
+del _service
