@@ -212,6 +212,32 @@ def test_sentry_follows_the_cursor_only_while_results_remain():
     assert len(calls) == 2
 
 
+def test_sentry_retries_a_page_that_times_out_once():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if len(calls) == 1:
+            raise httpx.ReadTimeout("slow", request=request)
+        return httpx.Response(200, json=[SENTRY])
+
+    assert len(list(sync.sentry_issues(mock(handler), "personal-yu0"))) == 1
+    assert len(calls) == 2
+
+
+def test_sentry_gives_up_after_the_retry_times_out_too():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    with pytest.raises(httpx.ReadTimeout):
+        list(sync.sentry_issues(mock(handler), "personal-yu0"))
+
+
+def test_sentry_api_uses_the_organisation_region_host():
+    # The global host proxies to the region and is the one that timed out in production.
+    assert sync.SENTRY_API == "https://us.sentry.io/api/0"
+
+
 def test_a_failing_source_is_reported_and_the_others_still_run(capsys):
     def down(request: httpx.Request) -> httpx.Response:
         return httpx.Response(502)

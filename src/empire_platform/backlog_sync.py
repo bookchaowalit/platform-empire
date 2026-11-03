@@ -52,7 +52,7 @@ import httpx
 from ._sentry import capture
 
 GITHUB_API = "https://api.github.com"
-SENTRY_API = "https://sentry.io/api/0"
+SENTRY_API = "https://us.sentry.io/api/0"  # the org's region; the global host proxies and timed out
 SOURCES = ("github", "sentry", "files")
 # Labels P0..P3 (runbook) -> tasks-api priority 1..4 (1 is the highest; 3 is the default).
 PRIORITY = {"p0": 1, "p1": 2, "p2": 3, "p3": 4}
@@ -230,7 +230,10 @@ def sentry_issues(sentry: httpx.Client, org: str) -> Iterator[Mapping[str, Any]]
     for _ in range(20):
         if url is None:
             return
-        response = sentry.get(url, params=params)
+        try:
+            response = sentry.get(url, params=params)
+        except httpx.TimeoutException:  # one retry; a second timeout skips the source
+            response = sentry.get(url, params=params)
         response.raise_for_status()
         yield from response.json()
         nxt = response.links.get("next", {})
