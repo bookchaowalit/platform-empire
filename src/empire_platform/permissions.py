@@ -428,6 +428,12 @@ PLATFORM_SHARED_SCOPES: dict[str, str] = {
     # identity-api picks them up when IDENTITY_SHARED_SCOPE_PERMISSIONS_JSON is regenerated.
     "references:read": "security.secret-reference:read",
     "references:write": "security.secret-reference:write",
+    # payment-api (staged 2026-11-03, Stripe test mode only; readiness waits on the sandbox key).
+    "payments:read": "payment.payment:read",
+    "payments:write": "payment.payment:write",
+    "payments:refund": "payment.refund:write",
+    "billing:read": "payment.billing:read",
+    "billing:write": "payment.billing:write",
 }
 
 for _service in (
@@ -439,6 +445,7 @@ for _service in (
     "logistics",
     "developer",
     "security",
+    "payment",
 ):
     CELL_OWNERS[_service] = tuple(
         sorted(

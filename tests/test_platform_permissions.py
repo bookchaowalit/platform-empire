@@ -18,6 +18,7 @@ SERVICES = (
     "logistics",
     "developer",
     "security",
+    "payment",
 )
 
 
@@ -70,6 +71,11 @@ def test_scopes_the_services_check_are_all_mapped():
         "tracking:write",
         "flags:read",
         "flags:write",
+        "payments:read",
+        "payments:write",
+        "payments:refund",
+        "billing:read",
+        "billing:write",
     }
     assert set(PLATFORM_SHARED_SCOPES) == expected
 
