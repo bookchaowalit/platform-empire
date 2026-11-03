@@ -65,6 +65,7 @@ DEFAULT_AUDIENCES = (
     "commerce-api",
     "logistics-api",
     "developer-api",
+    "security-api",  # deployed 2026-11-02
 )
 
 

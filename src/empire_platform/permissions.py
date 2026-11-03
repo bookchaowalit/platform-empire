@@ -424,6 +424,10 @@ PLATFORM_SHARED_SCOPES: dict[str, str] = {
     # posture-monitor (scope audit:write), registered in IDENTITY_SERVICE_CLIENTS_JSON.
     "audit:read": "security.audit:read",
     "audit:write": "security.audit:write",
+    # security-api secret references: no caller yet. Mapped so the owner can be granted them;
+    # identity-api picks them up when IDENTITY_SHARED_SCOPE_PERMISSIONS_JSON is regenerated.
+    "references:read": "security.secret-reference:read",
+    "references:write": "security.secret-reference:write",
 }
 
 for _service in (
