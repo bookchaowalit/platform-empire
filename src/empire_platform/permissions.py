@@ -420,6 +420,10 @@ PLATFORM_SHARED_SCOPES: dict[str, str] = {
     "tracking:write": "logistics.tracking:write",
     "flags:read": "developer.flag:read",
     "flags:write": "developer.flag:write",
+    # security-api audit log (live 2026-11-03). First holder: identity service client
+    # posture-monitor (scope audit:write), registered in IDENTITY_SERVICE_CLIENTS_JSON.
+    "audit:read": "security.audit:read",
+    "audit:write": "security.audit:write",
 }
 
 for _service in (
@@ -430,6 +434,7 @@ for _service in (
     "commerce",
     "logistics",
     "developer",
+    "security",
 ):
     CELL_OWNERS[_service] = tuple(
         sorted(

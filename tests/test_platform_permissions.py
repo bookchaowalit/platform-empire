@@ -17,6 +17,7 @@ SERVICES = (
     "commerce",
     "logistics",
     "developer",
+    "security",
 )
 
 
@@ -33,7 +34,10 @@ def test_owner_role_holds_every_mapped_permission():
 
 
 def test_scopes_the_services_check_are_all_mapped():
+    # security-api also checks references:read/write; they are not mapped until a caller needs them.
     expected = {
+        "audit:read",
+        "audit:write",
         "messages:read",
         "messages:write",
         "opt-outs:write",
