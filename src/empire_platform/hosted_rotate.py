@@ -45,6 +45,8 @@ import httpx
 from empire_platform.rotate import DAY, DEPLOYMENTS, emit, token_exp
 
 RAILWAY_GRAPHQL = "https://backboard.railway.com/graphql/v2"
+# The top-level ``projects`` query needs a workspace id, even with a valid account token.
+RAILWAY_WORKSPACE_ID = "b98db09f-4d8f-4cb5-a4cc-2340f8381662"
 VERCEL_API = "https://api.vercel.com"
 CLOUDFLARE_API = "https://api.cloudflare.com/client/v4"
 INFISICAL_API = "https://app.infisical.com"
@@ -102,9 +104,12 @@ def load_hosted_targets(path: Path = DEPLOYMENTS) -> tuple[list[HostedTarget], i
 class RailwayApi:
     """Project/service/environment lookup and variable read/upsert over GraphQL."""
 
-    def __init__(self, client: httpx.Client, token: str) -> None:
+    def __init__(
+        self, client: httpx.Client, token: str, workspace: str = RAILWAY_WORKSPACE_ID
+    ) -> None:
         self.client = client
         self.headers = {"Authorization": f"Bearer {token}"}
+        self.workspace = workspace
         self._projects: dict[str, dict[str, Any]] | None = None
 
     def _query(self, query: str, variables: Mapping[str, Any]) -> dict[str, Any]:
@@ -149,10 +154,10 @@ class RailwayApi:
 
     def _ids_cache_warm(self) -> None:
         data = self._query(
-            "query { projects { edges { node { id name"
+            "query($w: String) { projects(workspaceId: $w) { edges { node { id name"
             " environments { edges { node { id name } } }"
             " services { edges { node { id name } } } } } } }",
-            {},
+            {"w": self.workspace},
         )
         self._projects = {
             edge["node"]["name"]: edge["node"] for edge in data["projects"]["edges"]
@@ -591,7 +596,11 @@ def run(
 def build_apis(env: Mapping[str, str], client: httpx.Client) -> Apis:
     apis = Apis()
     if env.get("RAILWAY_API_TOKEN"):
-        apis.railway = RailwayApi(client, env["RAILWAY_API_TOKEN"])
+        apis.railway = RailwayApi(
+            client,
+            env["RAILWAY_API_TOKEN"],
+            env.get("RAILWAY_WORKSPACE_ID") or RAILWAY_WORKSPACE_ID,
+        )
     if env.get("VERCEL_TOKEN"):
         apis.vercel = VercelApi(client, env["VERCEL_TOKEN"], env.get("VERCEL_TEAM_ID"))
     if env.get("CLOUDFLARE_API_TOKEN") and env.get("CLOUDFLARE_ACCOUNT_ID"):
