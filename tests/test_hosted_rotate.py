@@ -430,7 +430,7 @@ def test_railway_projects_query_names_the_workspace():
     hr.RailwayApi(client, "r").verify()
     hr.build_apis(
         {"RAILWAY_API_TOKEN": "r", "RAILWAY_WORKSPACE_ID": "ws-2"}, client
-    ).railway.verify()  # type: ignore[union-attr]
+    ).railway.verify()
     assert "projects(workspaceId: $w)" in seen[0]["query"]
     assert seen[0]["variables"] == {"w": hr.RAILWAY_WORKSPACE_ID}
     assert seen[1]["variables"] == {"w": "ws-2"}
