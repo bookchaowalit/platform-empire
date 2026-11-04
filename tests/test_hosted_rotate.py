@@ -417,3 +417,20 @@ def test_contracts_are_found_where_the_image_puts_them(tmp_path, monkeypatch):
     if not Path("/app/contracts").is_dir():
         with pytest.raises(FileNotFoundError, match="EMPIRE_CONTRACTS_DIR"):
             devdb.contracts_dir()
+
+
+def test_railway_projects_query_names_the_workspace():
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=PROJECTS)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    hr.RailwayApi(client, "r").verify()
+    hr.build_apis(
+        {"RAILWAY_API_TOKEN": "r", "RAILWAY_WORKSPACE_ID": "ws-2"}, client
+    ).railway.verify()  # type: ignore[union-attr]
+    assert "projects(workspaceId: $w)" in seen[0]["query"]
+    assert seen[0]["variables"] == {"w": hr.RAILWAY_WORKSPACE_ID}
+    assert seen[1]["variables"] == {"w": "ws-2"}
