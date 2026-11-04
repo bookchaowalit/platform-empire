@@ -434,6 +434,10 @@ PLATFORM_SHARED_SCOPES: dict[str, str] = {
     "payments:refund": "payment.refund:write",
     "billing:read": "payment.billing:read",
     "billing:write": "payment.billing:write",
+    # ai-api = platform-ai-gateway-api (owner decision 2026-11-04: the live gateway is the ai service).
+    # Its hashed static tokens keep working until every caller moves to identity tokens.
+    "ai:read": "ai.status:read",
+    "ai:generate": "ai.generation:write",
 }
 
 for _service in (
@@ -446,6 +450,7 @@ for _service in (
     "developer",
     "security",
     "payment",
+    "ai",
 ):
     CELL_OWNERS[_service] = tuple(
         sorted(

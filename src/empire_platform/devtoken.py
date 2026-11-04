@@ -67,6 +67,7 @@ DEFAULT_AUDIENCES = (
     "developer-api",
     "security-api",  # deployed 2026-11-02
     "payment-api",  # staged 2026-11-03
+    "ai-api",  # platform-ai-gateway-api, 2026-11-04
 )
 
 
