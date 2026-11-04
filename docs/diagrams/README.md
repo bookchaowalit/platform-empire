@@ -14,7 +14,7 @@ repo นี้คือ **empire-platform**: monorepo ของ control plane �
 | 05 | C4 Context | done | [05-c4-context.md](05-c4-context.md) | `PRODUCT.md`, integration modules, `deployments.json`, ops record api-gateway-edge |
 | 06 | C4 Container | done | [06-c4-container.md](06-c4-container.md) | `railway.ts`, `Dockerfile`, `docker-entrypoint.sh`, `pyproject.toml`, mains |
 | 07 | C4 Component | done | [07-c4-component.md](07-c4-component.md) | `tasks_api/*`, `platform_api/*`, `empire_authz`, `jwks.py`, `_sentry.py`, job imports |
-| 08 | ADRs | done (6) + reused central ADR-0002/0003/0006 | [08-adr/](08-adr/) | migrations, `app.py`, `publisher.py`, `railway.ts`, `auth.py`, `hosted_rotate.py`, `_sentry.py`, PR list |
+| 08 | ADRs | done (7; ADR-0007 added 2026-11-04 at `51c8ad3`) + reused central ADR-0002/0003/0006 | [08-adr/](08-adr/) | migrations, `app.py`, `publisher.py`, `railway.ts`, `auth.py`, `hosted_rotate.py`, `_sentry.py`, PR list |
 | 09 | ERD | done (3 schemas) | [09-erd.md](09-erd.md) | `services/*/migrations/*.sql` |
 | 10 | Sequences | done (4) | [10-sequences.md](10-sequences.md) | `app.py`, `routes.py`, `publisher.py`, `consumer.py`, `hosted_rotate.py` |
 | 11 | State machines | done (7) | [11-state-machines.md](11-state-machines.md) | migrations (CHECKs), `app.py`, `cells.py`, `backlog-sync.md` |
@@ -38,8 +38,11 @@ repo นี้คือ **empire-platform**: monorepo ของ control plane �
 - [ADR-0004](08-adr/ADR-0004-one-image-railway-cd-wait-for-ci.md) Image เดียว, Railway CD จาก `main` หลัง CI
 - [ADR-0005](08-adr/ADR-0005-platform-jwt-delegations-hosted-rotation.md) RS256 JWT + delegation, token 30 วัน, hosted weekly rotation
 - [ADR-0006](08-adr/ADR-0006-sentry-errors-only-and-heartbeats.md) Sentry errors only + heartbeats
+- [ADR-0007](08-adr/ADR-0007-shared-scope-permission-map.md) empire-platform owns the shared-scope → canonical permission map for platform-identity
 
 Central ADRs ที่เกี่ยวข้อง (reused, ไม่ copy): architecture-docs [ADR-0002](https://github.com/bookchaowalit/architecture-docs/blob/main/docs/architecture/decisions/ADR-0002-production-baseline-monitoring-backups.md), [ADR-0003](https://github.com/bookchaowalit/architecture-docs/blob/main/docs/architecture/decisions/ADR-0003-hosted-shared-services.md), [ADR-0006](https://github.com/bookchaowalit/architecture-docs/blob/main/docs/architecture/decisions/ADR-0006-backlog-sync-host.md)
+
+Architecture summary: [`DOCPACK/02-architecture.md`](../../DOCPACK/02-architecture.md)
 
 ## Validation
 

@@ -43,3 +43,4 @@ Sources: `PRODUCT.md` (Users, Operating Context), `services/platform/platform_ap
 ## Open questions
 
 - ผู้บริโภคปัจจุบันของ Tasks API ครบหรือยัง (เช่น Go `task-sync`, TypeScript writers ที่ runbook ระบุว่า "still pending")? รายชื่อ automation ใน `automations.json` มี 46 ตัว แต่ไม่ได้บอกว่าตัวไหนยัง active
+- (2026-11-04, `16b5349`) audience `ai-api` = platform-ai-gateway-api เพิ่มใน `devtoken.py` / `permissions.py`; Book Platform services (รวม ai-api) อยู่ในกล่อง "Domain cells" ของภาพนี้ ควรแยกเป็น node ของตัวเองหรือไม่ และการเลือก ai service ถือเป็น owner decision ที่ปิดแล้วหรือยัง
