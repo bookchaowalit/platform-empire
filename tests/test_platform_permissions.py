@@ -19,6 +19,7 @@ SERVICES = (
     "developer",
     "security",
     "payment",
+    "ai",
 )
 
 
@@ -76,6 +77,8 @@ def test_scopes_the_services_check_are_all_mapped():
         "payments:refund",
         "billing:read",
         "billing:write",
+        "ai:read",
+        "ai:generate",
     }
     assert set(PLATFORM_SHARED_SCOPES) == expected
 
