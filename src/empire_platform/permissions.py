@@ -438,6 +438,14 @@ PLATFORM_SHARED_SCOPES: dict[str, str] = {
     # Its hashed static tokens keep working until every caller moves to identity tokens.
     "ai:read": "ai.status:read",
     "ai:generate": "ai.generation:write",
+    # credits-api = platform-credits (prepaid agent credits, SPEC-002/003, 2026-11-08). spend-any is for
+    # services spending for many agents; grant mints credits, so it is kept apart from admin.
+    "credits:read": "credits.account:read",
+    "credits:spend": "credits.hold:write",
+    "credits:spend-any": "credits.hold-any:write",
+    "credits:topup": "credits.topup:write",
+    "credits:admin": "credits.admin:write",
+    "credits:grant": "credits.grant:write",
 }
 
 for _service in (
@@ -451,6 +459,7 @@ for _service in (
     "security",
     "payment",
     "ai",
+    "credits",
 ):
     CELL_OWNERS[_service] = tuple(
         sorted(

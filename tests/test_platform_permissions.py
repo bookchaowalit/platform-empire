@@ -20,13 +20,17 @@ SERVICES = (
     "security",
     "payment",
     "ai",
+    "credits",
 )
+# platform-identity config.py _SHARED: shared scopes have exactly one colon (SPEC-003 R1-B1 of platform-credits).
+SHARED = re.compile(r"^[a-z][a-z0-9_.-]{0,63}:[a-z][a-z0-9_.-]{0,63}$")
 
 
 def test_every_shared_scope_maps_to_a_canonical_permission():
     assert PLATFORM_SHARED_SCOPES
     for scope, permission in PLATFORM_SHARED_SCOPES.items():
         assert not CANONICAL.match(scope), scope
+        assert SHARED.match(scope), scope
         assert CANONICAL.match(permission), permission
 
 
@@ -79,6 +83,12 @@ def test_scopes_the_services_check_are_all_mapped():
         "billing:write",
         "ai:read",
         "ai:generate",
+        "credits:read",
+        "credits:spend",
+        "credits:spend-any",
+        "credits:topup",
+        "credits:admin",
+        "credits:grant",
     }
     assert set(PLATFORM_SHARED_SCOPES) == expected
 
@@ -88,3 +98,14 @@ def test_identity_limits_hold():
     assert len(PLATFORM_SHARED_SCOPES) <= 64
     assert len(json.dumps(PLATFORM_SHARED_SCOPES)) <= 16384
     assert all(len(s) <= 128 for s in PLATFORM_SHARED_SCOPES)
+
+
+def test_credits_owner_permissions():
+    assert CELL_OWNERS["credits"] == (
+        "credits.account:read",
+        "credits.admin:write",
+        "credits.grant:write",
+        "credits.hold-any:write",
+        "credits.hold:write",
+        "credits.topup:write",
+    )

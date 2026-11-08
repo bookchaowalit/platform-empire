@@ -1,4 +1,4 @@
-"""Platform service audiences (deployed 2026-10-29; security 2026-11-02; payment 2026-11-03; ai 2026-11-04) must be in the default token audiences."""
+"""Platform service audiences (deployed 2026-10-29; security 2026-11-02; payment 2026-11-03; ai 2026-11-04; credits 2026-11-08) must be in the default token audiences."""
 
 from empire_platform.devtoken import DEFAULT_AUDIENCES
 
@@ -13,6 +13,7 @@ PLATFORM_AUDIENCES = (
     "security-api",
     "payment-api",
     "ai-api",
+    "credits-api",
 )
 
 
