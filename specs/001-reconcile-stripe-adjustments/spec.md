@@ -47,5 +47,7 @@ Since sales-crm `f976d8b` the crm-income webhook writes signed adjustment rows
 - AC-5 one cumulative refund row covers two refund balance transactions in the same payout.
 - AC-6 a refund settled in another currency is allocated by the refund's own amount (`source.amount`, the
   charge currency of `refund_minor`), not the settlement amount.
+- AC-8 a dispute balance transaction is matched only when each non-zero part (amount, fee) has its own
+  ledger row (`dispute`, `dispute_fee`).
 - AC-7 a fee transaction returned by its idempotency key with an amount other than the computed fee (an
   interrupted earlier run) makes the reconciliation an `exception` with `fee_transaction_mismatch`.
