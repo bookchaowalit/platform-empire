@@ -16,6 +16,14 @@ PAID_AT = NOW - 9 * 86400
 ARRIVAL = NOW - 86400  # 2026-10-26 07:00 Bangkok
 
 
+# Filters each finance cell accepts (their cell.yaml); anything else is 422 unknown_filter.
+FILTERS = {
+    "accounts": {"account_type", "scope"},
+    "transactions": {"account_id", "category", "transaction_type", "scope"},
+    "reconciliations": {"source_type", "status", "account_id"},
+}
+
+
 class World:
     """In-memory Stripe, crm-income ledger and the three finance cells."""
 
@@ -160,6 +168,18 @@ class World:
                 query = {
                     k: v[0] for k, v in parse_qs(request.url.query.decode()).items()
                 }
+                # The real cells answer 422 unknown_filter for a filter not in cell.yaml.
+                unknown = set(query) - FILTERS[plural] - {"limit", "offset"}
+                if unknown:
+                    return httpx.Response(
+                        422,
+                        json={
+                            "detail": {
+                                "error": "unknown_filter",
+                                "fields": sorted(unknown),
+                            }
+                        },
+                    )
                 found = [
                     i
                     for i in items
@@ -548,6 +568,7 @@ def test_stale_fee_transaction_is_flagged_when_the_new_fee_is_zero():
         "amount": 535.0,
         "category": "payment_processing_fee",
         "source": "stripe",
+        "scope": "solo_empire",
         "description": "Stripe fees in payout po_1",
     }
     world.cells["transactions"].append(
@@ -560,3 +581,31 @@ def test_stale_fee_transaction_is_flagged_when_the_new_fee_is_zero():
     assert recon["status"] == "exception"
     assert notes["fee_transaction_mismatch"] == {"recorded": 535.0, "expected": 0.0}
     assert notes["fee_transaction_id"] == 99
+
+
+def test_dry_run_previews_a_stale_fee_transaction_as_exception(capsys):
+    world = World()
+    _with_adjustments(world)
+    stale = {
+        "id": 99,
+        "transaction_type": "fee",
+        "amount": 1032.70,
+        "category": "payment_processing_fee",
+        "source": "stripe",
+        "scope": "solo_empire",
+        "description": "Stripe fees in payout po_1",
+    }
+    world.cells["transactions"].append(stale)
+    world.keys["stripe:po_1:fee"] = stale
+    world.run(dry_run=True)
+    preview = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if "would_reconcile" in line
+    ]
+    assert preview[0]["status"] == "exception"
+    assert preview[0]["fee_transaction_mismatch"] == {
+        "recorded": 1032.70,
+        "expected": 497.70,
+    }
+    assert world.writes == []
