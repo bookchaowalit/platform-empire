@@ -411,7 +411,16 @@ def match_adjustments(
                 and stripe_ids(r).get("charge") == charge
                 and not stripe_ids(r).get("refund")
             ]
-            need = abs(int(txn.get("amount") or 0))
+            # refund_minor is in the charge currency; the balance transaction is in the settlement
+            # currency, so allocate the refund's own amount when the expanded source carries it.
+            own_amount = source.get("amount")
+            need = (
+                abs(own_amount)
+                if source.get("object") == "refund"
+                and isinstance(own_amount, int)
+                and not isinstance(own_amount, bool)
+                else abs(int(txn.get("amount") or 0))
+            )
             taken: dict[int, int] = {}
             for row in own + same_charge:
                 row_id = int(row["id"])
@@ -560,6 +569,16 @@ def reconcile_payout(
             },
             key=f"stripe:{payout_id}:fee",
         )
+        # The key may return a fee transaction from an earlier, interrupted run with another amount
+        # (for example before a dispute_fee row reached the ledger); flag it instead of trusting it.
+        recorded = round(float(fee_txn.get("amount") or 0), 2)
+        if abs(recorded - fees) >= 0.005:
+            status = "exception"
+            summary["status"] = status
+            summary["fee_transaction_mismatch"] = {
+                "recorded": recorded,
+                "expected": fees,
+            }
     for row in matched:
         notes = _notes(row)
         if notes.get("cash_reconciled") and notes.get("payout") == payout_id:
