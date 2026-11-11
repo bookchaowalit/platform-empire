@@ -231,7 +231,8 @@ def test_fees_and_payout_are_reconciled_once():
     accounts = {a["account_type"]: a for a in world.cells["accounts"]}
     assert accounts["payment"]["name"] == "Stripe balance"
     assert accounts["bank"]["name"] == "KASIKORNBANK ••1234"
-    assert all(a["owner_scope"] == "solo_empire" for a in accounts.values())
+    assert all(a["scope"] == "solo_empire" for a in accounts.values())
+    assert not any("owner_scope" in a for a in accounts.values())
     transfer, fee = world.cells["transactions"]
     assert (
         transfer["transaction_type"],

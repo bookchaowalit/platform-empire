@@ -10,7 +10,7 @@ as gross revenue in the crm-income ledger.
 | Step | Reads | Writes | Idempotent on |
 |---|---|---|---|
 | Fees | ledger rows with `notes.source = stripe-webhook` and no fee; the Stripe balance transaction of each payment | row notes: `fee`, `net`, `settlement_currency`, `balance_transaction` | rows that already have a fee are skipped |
-| Accounts | finance-accounts (`owner_scope = solo_empire`) | `Stripe balance` (type `payment`) and the payout bank account `<bank> ••<last4>` (type `bank`), once | name + type; `Idempotency-Key` |
+| Accounts | finance-accounts (`scope = solo_empire`) | `Stripe balance` (type `payment`) and the payout bank account `<bank> ••<last4>` (type `bank`), once | name + type; `Idempotency-Key` |
 | Payouts | paid Stripe payouts of the last 90 days and their balance transactions; reconciliations with `source_type = wallet_export` | one `transfer` transaction (payout, bank account, arrival date), one `fee` transaction (Stripe fees, Stripe account), ledger notes `cash_reconciled: true` + `payout`, then one reconciliation (`source_ref` = payout id) | the reconciliation is the done marker; every create sends `Idempotency-Key: stripe:<payout>:<purpose>` |
 
 A reconciliation is `matched` when the payout equals the sum of its balance transactions and

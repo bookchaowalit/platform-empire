@@ -11,7 +11,7 @@ This job finishes the Order-to-Cash trail:
    ``source_ref = <payout id>``):
 
    - ensure two finance accounts (``Stripe balance``, type ``payment``; the payout bank
-     account, type ``bank``; both ``owner_scope = solo_empire``);
+     account, type ``bank``; both ``scope = solo_empire``);
    - create a ``transfer`` transaction (Stripe -> bank, the payout amount, on the arrival
      date) and one ``fee`` transaction (the Stripe fees inside the payout);
    - mark the ledger rows whose balance transaction is in the payout ``cash_reconciled``;
@@ -57,7 +57,8 @@ from ._sentry import capture
 
 STRIPE_API = "https://api.stripe.com/v1"
 BANGKOK = timezone(timedelta(hours=7))
-OWNER_SCOPE = "solo_empire"
+# The finance cells label rows with a free per-workspace scope (SPEC-003); this job uses "solo_empire".
+SCOPE = "solo_empire"
 STRIPE_ACCOUNT = "Stripe balance"
 ZERO_DECIMAL = {
     "bif",
@@ -295,7 +296,7 @@ def ensure_account(
     dry_run: bool,
     metadata: Mapping[str, Any] | None = None,
 ) -> int | None:
-    for account in cell.list(account_type=account_type, owner_scope=OWNER_SCOPE):
+    for account in cell.list(account_type=account_type, scope=SCOPE):
         if account.get("name") == name:
             return int(account["id"])
     if dry_run:
@@ -304,7 +305,7 @@ def ensure_account(
         {
             "name": name,
             "account_type": account_type,
-            "owner_scope": OWNER_SCOPE,
+            "scope": SCOPE,
             "institution": institution,
             "currency": "THB",
             "status": "active",
@@ -387,7 +388,7 @@ def reconcile_payout(
             "amount": paid,
             "currency": currency.upper(),
             "account_id": bank_account,
-            "owner_scope": OWNER_SCOPE,
+            "scope": SCOPE,
             "category": "stripe_payout",
             "merchant": "Stripe",
             "description": f"Stripe payout {payout_id}",
@@ -405,7 +406,7 @@ def reconcile_payout(
                 "amount": fees,
                 "currency": currency.upper(),
                 "account_id": stripe_account,
-                "owner_scope": OWNER_SCOPE,
+                "scope": SCOPE,
                 "category": "payment_processing_fee",
                 "merchant": "Stripe",
                 "description": f"Stripe fees in payout {payout_id}",
