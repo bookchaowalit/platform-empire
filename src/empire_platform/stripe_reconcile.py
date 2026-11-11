@@ -446,6 +446,10 @@ def match_adjustments(
                 and stripe_ids(r).get("balance_transaction") == txn["id"]
             ]
             kinds = {r.get("entry_type") for r in rows}
+            # A fee already booked as a ledger dispute_fee row belongs to the ledger, whatever
+            # happens to the principal, so the payout fee transaction never counts it again.
+            if "dispute_fee" in kinds:
+                ledger_dispute_fee += int(txn.get("fee") or 0)
             # Every non-zero part of the balance transaction needs its own ledger row.
             if (int(txn.get("amount") or 0) and "dispute" not in kinds) or (
                 int(txn.get("fee") or 0) and "dispute_fee" not in kinds
@@ -453,8 +457,6 @@ def match_adjustments(
                 unmatched.append(str(txn["id"]))
                 continue
             matched.extend(int(r["id"]) for r in rows if int(r["id"]) not in matched)
-            if any(r.get("entry_type") == "dispute_fee" for r in rows):
-                ledger_dispute_fee += int(txn.get("fee") or 0)
     return matched, unmatched, ledger_dispute_fee, allocations
 
 

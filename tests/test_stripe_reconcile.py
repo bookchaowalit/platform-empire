@@ -550,6 +550,8 @@ def test_dispute_with_only_a_fee_row_is_unmatched():
     notes = json.loads(recon["notes"])
     assert recon["status"] == "exception"
     assert notes["unmatched_adjustment_balance_transactions"] == ["txn_dp"]
+    # the fee is already in the ledger (dispute_fee row), so it stays out of the fee transaction
+    assert world.cells["transactions"][1]["amount"] == 497.70
 
 
 def test_stale_fee_transaction_is_flagged_when_the_new_fee_is_zero():
