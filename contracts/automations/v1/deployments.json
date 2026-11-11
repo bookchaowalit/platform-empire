@@ -28,6 +28,10 @@
     {"automation": "backlog-sync", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_BACKLOG_SYNC"},
     {"automation": "reporting-reader", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_REPORTING_READER"},
     {"automation": "stripe-reconciler", "provider": "railway", "checkout": "platform-empire", "service": "stripe-reconcile", "variable": "STRIPE_RECONCILER_TOKEN"},
-    {"automation": "stripe-reconciler", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_STRIPE_RECONCILER"}
+    {"automation": "stripe-reconciler", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_STRIPE_RECONCILER"},
+    {"automation": "stripe-reconciler", "provider": "railway", "checkout": "platform-empire", "service": "stripe-reconcile", "variable": "CRM_LEDGER_TOKEN"},
+    {"automation": "hiring-radar", "provider": "railway", "checkout": "sales-crm", "project": "data-schedules", "service": "hiring-radar", "variable": "CRM_API_TOKEN"},
+    {"automation": "owner-mcp", "provider": "cloudflare", "worker": "solo-empire-mcp-remote", "variable": "AGENCY_CRM_TOKEN"},
+    {"automation": "owner-mcp", "provider": "cloudflare", "worker": "solo-empire-mcp-remote", "variable": "INCOME_CRM_TOKEN"}
   ]
 }

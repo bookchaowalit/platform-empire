@@ -55,6 +55,25 @@ def load_registry(path: Path = REGISTRY) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def extra_audiences(registry: dict | None = None) -> dict[str, tuple[str, ...]]:
+    """automation -> its opt-in audiences (``extra_audiences``); only OPT_IN_AUDIENCES are allowed."""
+    from empire_platform.devtoken import OPT_IN_AUDIENCES
+
+    registry = registry or load_registry()
+    extras: dict[str, tuple[str, ...]] = {}
+    for automation in registry["automations"]:
+        names = automation.get("extra_audiences", [])
+        if (
+            not isinstance(names, list)
+            or any(n not in OPT_IN_AUDIENCES for n in names)
+            or len(set(names)) != len(names)
+        ):
+            raise ValueError(f"invalid extra_audiences for {automation['id']}")
+        if names:
+            extras[automation["id"]] = tuple(names)
+    return extras
+
+
 def provision(
     cluster: AnyCluster,
     workspace_id: uuid.UUID,
@@ -204,7 +223,12 @@ def _add_key_options(parser: argparse.ArgumentParser) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from empire_platform.devtoken import ISSUER, generate_keys, mint
+    from empire_platform.devtoken import (
+        DEFAULT_AUDIENCES,
+        ISSUER,
+        generate_keys,
+        mint,
+    )
 
     parser = argparse.ArgumentParser(
         prog="empire-automations", description=__doc__.splitlines()[0]
@@ -285,6 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         print(exc.args[0], file=sys.stderr)
         return 2
     if args.tokens:
+        extras = extra_audiences()
         for item in results:
             write_token(
                 args.tokens,
@@ -297,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
                     obo=item.owner,
                     ttl=token_ttl(ttl, item.expires_at),
                     issuer=issuer,
+                    audience=(*DEFAULT_AUDIENCES, *extras.get(item.automation, ())),
                 ),
             )
     for item in results:

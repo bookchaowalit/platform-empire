@@ -70,6 +70,10 @@ DEFAULT_AUDIENCES = (
     "ai-api",  # platform-ai-gateway-api, 2026-11-04
     "credits-api",  # platform-credits, 2026-11-08
 )
+# Audiences an automation receives only when the registry names them in its ``extra_audiences``:
+# the CRM instances (sales-crm crm-api, agency and income) treat an allowed automation as the owner,
+# so no other automation token may carry them (2026-11-11).
+OPT_IN_AUDIENCES = ("crm-api", "crm-income-api")
 
 
 def key_pair(directory: Path = KEY_DIR) -> tuple[str, str]:

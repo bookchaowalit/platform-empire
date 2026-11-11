@@ -1,6 +1,6 @@
 """Platform service audiences (deployed 2026-10-29; security 2026-11-02; payment 2026-11-03; ai 2026-11-04; credits 2026-11-08) must be in the default token audiences."""
 
-from empire_platform.devtoken import DEFAULT_AUDIENCES
+from empire_platform.devtoken import DEFAULT_AUDIENCES, OPT_IN_AUDIENCES
 
 PLATFORM_AUDIENCES = (
     "communication-api",
@@ -24,3 +24,7 @@ def test_platform_service_audiences_are_default():
 
 def test_default_audiences_have_no_duplicates():
     assert len(DEFAULT_AUDIENCES) == len(set(DEFAULT_AUDIENCES))
+
+
+def test_opt_in_audiences_are_never_default():
+    assert set(OPT_IN_AUDIENCES).isdisjoint(DEFAULT_AUDIENCES)

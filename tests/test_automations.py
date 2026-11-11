@@ -333,3 +333,22 @@ def test_x_feed_collector_reaches_only_the_x_feed():
     assert (
         "intake.x-sighting:write" not in collector["scopes"]
     )  # the bot cannot mark its own pulls exported
+
+
+def test_crm_audiences_only_for_the_named_automations():
+    from empire_platform.automations import extra_audiences
+
+    extras = extra_audiences(REGISTRY)
+    assert extras == {
+        "owner-cli": ("crm-income-api",),
+        "stripe-reconciler": ("crm-income-api",),
+        "owner-mcp": ("crm-api", "crm-income-api"),
+        "hiring-radar": ("crm-api",),
+    }
+    bad = {"automations": [{"id": "x", "extra_audiences": ["tasks-api"]}]}
+    try:
+        extra_audiences(bad)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a non opt-in audience must be refused")

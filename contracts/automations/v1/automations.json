@@ -672,6 +672,9 @@
         "tasks.status:write",
         "tasks.task:read",
         "tasks.task:write"
+      ],
+      "extra_audiences": [
+        "crm-income-api"
       ]
     },
     {
@@ -1189,6 +1192,10 @@
         "time.time-log:write",
         "transactions.transaction:read",
         "transactions.transaction:write"
+      ],
+      "extra_audiences": [
+        "crm-api",
+        "crm-income-api"
       ]
     },
     {
@@ -1208,7 +1215,7 @@
       "writers": [
         "src/empire_platform/stripe_reconcile.py"
       ],
-      "does": "creates the Stripe balance and payout bank accounts, one transfer and one fee transaction per Stripe payout, and one reconciliation per payout (EOS gap G2, 2026-10-25); ledger notes are written with the CRM's own token, not this one",
+      "does": "creates the Stripe balance and payout bank accounts, one transfer and one fee transaction per Stripe payout, and one reconciliation per payout (EOS gap G2, 2026-10-25); since 2026-11-11 its token (rotated copy CRM_LEDGER_TOKEN, audience crm-income-api) also writes the CRM ledger notes as an allowed owner automation",
       "scopes": [
         "finance-accounts.account:read",
         "finance-accounts.account:write",
@@ -1216,6 +1223,22 @@
         "reconciliations.reconciliation:write",
         "transactions.transaction:read",
         "transactions.transaction:write"
+      ],
+      "extra_audiences": [
+        "crm-income-api"
+      ]
+    },
+    {
+      "id": "hiring-radar",
+      "writers": [
+        "sales-crm Agency Radar cron (Railway data-schedules/hiring-radar)"
+      ],
+      "does": "weekly employer hiring-demand scan written to the agency CRM Talent Radar as the owner (crm-api CRM_API_JWT_SUBJECTS); holds no cell write scope",
+      "scopes": [
+        "radar.profile:read"
+      ],
+      "extra_audiences": [
+        "crm-api"
       ]
     }
   ],
