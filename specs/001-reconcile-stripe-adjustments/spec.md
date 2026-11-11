@@ -19,6 +19,10 @@ Since sales-crm `f976d8b` the crm-income webhook writes signed adjustment rows
   - `refund` / `payment_refund`: the ledger `refund` row whose `notes.stripe.refund` is the refund id;
     otherwise (cumulative rows, the norm on API `2024-10-28.acacia` where `charge.refunds` is not in
     the webhook payload) an unused `refund` row of the same charge, preferring `refund_minor == −amount`.
+  - Refunds are **allocated by amount** (`refund_minor`) against each refund row's unallocated balance,
+    shared across payouts in a run and seeded from earlier reconciliations' `adjustment_allocations`, so one
+    cumulative row can cover several refunds and two equal refunds in different payouts use two rows (review
+    of #19, 2026-11-11).
   - dispute adjustments (`type = adjustment` with a dispute source, or `reporting_category`
     `dispute` / `dispute_reversal`): the `dispute` and `dispute_fee` rows whose
     `notes.stripe.balance_transaction` is the balance transaction id.
@@ -39,3 +43,5 @@ Since sales-crm `f976d8b` the crm-income webhook writes signed adjustment rows
 - AC-2 a dispute balance transaction with no ledger row keeps its fee in the fee transaction and makes
   the reconciliation an `exception` naming it.
 - AC-3 re-run writes nothing (existing idempotency).
+- AC-4 two equal refunds of one charge in two payouts use two ledger rows.
+- AC-5 one cumulative refund row covers two refund balance transactions in the same payout.
