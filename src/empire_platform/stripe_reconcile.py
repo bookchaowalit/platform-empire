@@ -79,6 +79,11 @@ ZERO_DECIMAL = {
     "xpf",
 }
 PAYMENT_TYPES = {"charge", "payment"}
+REFUND_TYPES = {"refund", "payment_refund"}
+DISPUTE_CATEGORIES = {"dispute", "dispute_reversal"}
+ADJUSTMENT_SOURCE = (
+    "stripe-webhook-adjustment"  # crm-income refund/dispute rows (sales-crm SPEC-001)
+)
 
 
 def _major(amount: int, currency: str) -> float:
@@ -181,7 +186,7 @@ class Ledger:
     def __init__(self, client: httpx.Client) -> None:
         self.client = client
 
-    def stripe_rows(self) -> list[dict[str, Any]]:
+    def all_rows(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         while True:
             response = self.client.get(
@@ -191,7 +196,12 @@ class Ledger:
             page = response.json()["items"]
             rows.extend(page)
             if len(page) < 500:
-                return [r for r in rows if _notes(r).get("source") == "stripe-webhook"]
+                return rows
+
+    def stripe_rows(self) -> list[dict[str, Any]]:
+        return [
+            r for r in self.all_rows() if _notes(r).get("source") == "stripe-webhook"
+        ]
 
     def set_notes(self, row_id: int, notes: Mapping[str, Any]) -> None:
         response = self.client.patch(
@@ -316,6 +326,83 @@ def ensure_account(
     return int(created["id"])
 
 
+def _is_dispute_txn(txn: Mapping[str, Any]) -> bool:
+    source = txn.get("source")
+    return txn.get("reporting_category") in DISPUTE_CATEGORIES or (
+        txn.get("type") == "adjustment"
+        and isinstance(source, dict)
+        and source.get("object") == "dispute"
+    )
+
+
+def match_adjustments(
+    txns: list[dict[str, Any]], adjustments: list[dict[str, Any]]
+) -> tuple[list[int], list[str], int]:
+    """Tie refund/dispute balance transactions to crm-income adjustment rows (SPEC-001).
+
+    Returns the matched row ids, the unmatched balance transaction ids, and the dispute fee
+    (minor units) already booked as ledger ``dispute_fee`` rows, which the payout ``fee``
+    transaction must leave out so owner cash counts it once.
+    """
+    matched: list[int] = []
+    unmatched: list[str] = []
+    used: set[int] = set()
+    ledger_dispute_fee = 0
+
+    def stripe_ids(row: Mapping[str, Any]) -> dict[str, Any]:
+        found = _notes(row).get("stripe")
+        return found if isinstance(found, dict) else {}
+
+    refunds = [r for r in adjustments if r.get("entry_type") == "refund"]
+    for txn in txns:
+        raw_source = txn.get("source")
+        source: dict[str, Any] = raw_source if isinstance(raw_source, dict) else {}
+        if txn.get("type") in REFUND_TYPES:
+            refund_id, charge = source.get("id"), source.get("charge")
+            candidates = [
+                r
+                for r in refunds
+                if int(r["id"]) not in used
+                and (
+                    (refund_id and stripe_ids(r).get("refund") == refund_id)
+                    or (
+                        charge
+                        and stripe_ids(r).get("charge") == charge
+                        and not stripe_ids(r).get("refund")
+                    )
+                )
+            ]
+            exact = (
+                [r for r in candidates if stripe_ids(r).get("refund") == refund_id]
+                or [
+                    r
+                    for r in candidates
+                    if _notes(r).get("refund_minor") == -int(txn.get("amount") or 0)
+                ]
+                or candidates
+            )
+            if exact:
+                used.add(int(exact[0]["id"]))
+                matched.append(int(exact[0]["id"]))
+            else:
+                unmatched.append(str(txn["id"]))
+        elif _is_dispute_txn(txn):
+            rows = [
+                r
+                for r in adjustments
+                if r.get("entry_type") in ("dispute", "dispute_fee")
+                and stripe_ids(r).get("balance_transaction") == txn["id"]
+            ]
+            if not rows:
+                unmatched.append(str(txn["id"]))
+                continue
+            matched.extend(int(r["id"]) for r in rows if int(r["id"]) not in used)
+            used.update(int(r["id"]) for r in rows)
+            if any(r.get("entry_type") == "dispute_fee" for r in rows):
+                ledger_dispute_fee += int(txn.get("fee") or 0)
+    return matched, unmatched, ledger_dispute_fee
+
+
 def reconcile_payout(
     payout: dict[str, Any],
     stripe: Stripe,
@@ -326,6 +413,7 @@ def reconcile_payout(
     report: Report,
     *,
     dry_run: bool,
+    adjustments: list[dict[str, Any]] | None = None,
 ) -> None:
     payout_id = payout["id"]
     if payout_id in done:
@@ -334,7 +422,9 @@ def reconcile_payout(
     currency = str(payout["currency"])
     txns = [
         t
-        for t in stripe.each("/balance_transactions", payout=payout_id)
+        for t in stripe.each(
+            "/balance_transactions", payout=payout_id, **{"expand[]": "data.source"}
+        )
         if t["type"] != "payout"
     ]
     by_bt = {
@@ -347,9 +437,17 @@ def reconcile_payout(
     unmatched = [t["id"] for t in payments if t["id"] not in by_bt]
     expected = _major(sum(t["net"] for t in txns), currency)
     paid = _major(payout["amount"], currency)
-    fees = _major(sum(t["fee"] for t in txns), currency)
+    matched_adjustments, unmatched_adjustments, ledger_dispute_fee = match_adjustments(
+        txns, adjustments or []
+    )
+    # A dispute fee already in the ledger (dispute_fee row) stays out of the fee transaction.
+    fees = _major(sum(t["fee"] for t in txns) - ledger_dispute_fee, currency)
     difference = round(expected - paid, 2)
-    status = "matched" if abs(difference) < 0.005 and not unmatched else "exception"
+    status = (
+        "matched"
+        if abs(difference) < 0.005 and not unmatched and not unmatched_adjustments
+        else "exception"
+    )
     raw_destination = payout.get("destination")
     destination: dict[str, Any] = (
         raw_destination if isinstance(raw_destination, dict) else {}
@@ -363,6 +461,9 @@ def reconcile_payout(
         "status": status,
         "matched_revenue_ids": [r["id"] for r in matched],
         "unmatched_balance_transactions": unmatched,
+        "matched_adjustment_ids": matched_adjustments,
+        "unmatched_adjustment_balance_transactions": unmatched_adjustments,
+        "dispute_fees_in_ledger": _major(ledger_dispute_fee, currency),
     }
     if dry_run:
         report.log("would_reconcile", **summary)
@@ -460,7 +561,11 @@ def run(
     days: int,
     payout_status: str,
 ) -> None:
-    rows = ledger.stripe_rows()
+    everything = ledger.all_rows()
+    rows = [r for r in everything if _notes(r).get("source") == "stripe-webhook"]
+    adjustments = [
+        r for r in everything if _notes(r).get("source") == ADJUSTMENT_SOURCE
+    ]
     record_fees(stripe, ledger, rows, report, dry_run=dry_run)
     done = {
         str(r.get("source_ref"))
@@ -475,7 +580,15 @@ def run(
     for payout in sorted(payouts, key=lambda p: p["arrival_date"]):
         try:
             reconcile_payout(
-                payout, stripe, ledger, finance, rows, done, report, dry_run=dry_run
+                payout,
+                stripe,
+                ledger,
+                finance,
+                rows,
+                done,
+                report,
+                dry_run=dry_run,
+                adjustments=adjustments,
             )
         except httpx.HTTPError as exc:
             capture(exc)
