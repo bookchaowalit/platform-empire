@@ -13,8 +13,15 @@ as gross revenue in the crm-income ledger.
 | Accounts | finance-accounts (`scope = solo_empire`) | `Stripe balance` (type `payment`) and the payout bank account `<bank> ••<last4>` (type `bank`), once | name + type; `Idempotency-Key` |
 | Payouts | paid Stripe payouts of the last 90 days and their balance transactions; reconciliations with `source_type = wallet_export` | one `transfer` transaction (payout, bank account, arrival date), one `fee` transaction (Stripe fees, Stripe account), ledger notes `cash_reconciled: true` + `payout`, then one reconciliation (`source_ref` = payout id) | the reconciliation is the done marker; every create sends `Idempotency-Key: stripe:<payout>:<purpose>` |
 
+Refund and dispute rows (`notes.source = stripe-webhook-adjustment`, sales-crm SPEC-001) are matched to the
+payout's `refund` and dispute `adjustment` balance transactions (listed with `expand[]=data.source`) and
+recorded in the reconciliation notes (`matched_adjustment_ids`, `unmatched_adjustment_balance_transactions`);
+their ledger notes are not written (crm-api locks them). A dispute fee that is already a ledger `dispute_fee`
+row is left out of the payout `fee` transaction (`dispute_fees_in_ledger`), so owner cash counts it once.
+See `specs/001-reconcile-stripe-adjustments/spec.md`.
+
 A reconciliation is `matched` when the payout equals the sum of its balance transactions and
-every payment in it has a ledger row; otherwise `exception`, with the unmatched balance
+every payment, refund and dispute in it has a ledger row; otherwise `exception`, with the unmatched balance
 transactions in its notes (for example the ฿10 readiness test paid before the webhook existed).
 
 Revenue stays in the ledger and is not copied to transactions: transactions hold only cash

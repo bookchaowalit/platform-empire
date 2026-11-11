@@ -318,22 +318,64 @@ def test_main_needs_config_and_https(capsys):
 
 def _with_adjustments(world: World, *, dispute_row: bool = True) -> None:
     """A partial refund and a lost-so-far dispute on ch_1, both inside po_1 (SPEC-001)."""
+
     def adj(row_id, entry_type, amount, stripe):
         notes = {"source": "stripe-webhook-adjustment", "stripe": stripe}
         if entry_type == "refund":
             notes["refund_minor"] = 100000
-        return {"id": row_id, "entry_type": entry_type, "amount": amount, "notes": json.dumps(notes)}
+        return {
+            "id": row_id,
+            "entry_type": entry_type,
+            "amount": amount,
+            "notes": json.dumps(notes),
+        }
 
-    world.revenue.append(adj(10, "refund", -1000.0, {"charge": "ch_1", "payment_intent": "pi_1"}))
+    world.revenue.append(
+        adj(10, "refund", -1000.0, {"charge": "ch_1", "payment_intent": "pi_1"})
+    )
     if dispute_row:
-        world.revenue.append(adj(11, "dispute", -6900.0, {"dispute": "dp_1", "balance_transaction": "txn_dp"}))
-        world.revenue.append(adj(12, "dispute_fee", -535.0, {"dispute": "dp_1", "balance_transaction": "txn_dp"}))
-    world.bts["txn_re"] = {"id": "txn_re", "type": "refund", "amount": -100000, "fee": 0, "net": -100000,
-                           "currency": "thb", "created": PAID_AT,
-                           "source": {"id": "re_1", "object": "refund", "charge": "ch_1", "payment_intent": "pi_1"}}
-    world.bts["txn_dp"] = {"id": "txn_dp", "type": "adjustment", "reporting_category": "dispute",
-                           "amount": -690000, "fee": 53500, "net": -743500, "currency": "thb", "created": PAID_AT,
-                           "source": {"id": "dp_1", "object": "dispute", "charge": "ch_1"}}
+        world.revenue.append(
+            adj(
+                11,
+                "dispute",
+                -6900.0,
+                {"dispute": "dp_1", "balance_transaction": "txn_dp"},
+            )
+        )
+        world.revenue.append(
+            adj(
+                12,
+                "dispute_fee",
+                -535.0,
+                {"dispute": "dp_1", "balance_transaction": "txn_dp"},
+            )
+        )
+    world.bts["txn_re"] = {
+        "id": "txn_re",
+        "type": "refund",
+        "amount": -100000,
+        "fee": 0,
+        "net": -100000,
+        "currency": "thb",
+        "created": PAID_AT,
+        "source": {
+            "id": "re_1",
+            "object": "refund",
+            "charge": "ch_1",
+            "payment_intent": "pi_1",
+        },
+    }
+    world.bts["txn_dp"] = {
+        "id": "txn_dp",
+        "type": "adjustment",
+        "reporting_category": "dispute",
+        "amount": -690000,
+        "fee": 53500,
+        "net": -743500,
+        "currency": "thb",
+        "created": PAID_AT,
+        "source": {"id": "dp_1", "object": "dispute", "charge": "ch_1"},
+    }
     world.in_payout["po_1"] += ["txn_re", "txn_dp"]
     world.payouts[0]["amount"] += -100000 - 743500
 
@@ -349,9 +391,13 @@ def test_refund_and_dispute_rows_match_and_dispute_fee_counts_once():
     assert sorted(notes["matched_adjustment_ids"]) == [10, 11, 12]
     assert notes["unmatched_adjustment_balance_transactions"] == []
     assert notes["dispute_fees_in_ledger"] == 535.0
-    transfer, fee = world.cells["transactions"]
-    assert fee["amount"] == 497.70  # processing fees only; the dispute fee lives in the ledger
-    assert not any(w in world.writes for w in ("ledger:10", "ledger:11", "ledger:12"))  # notes are locked
+    _transfer, fee = world.cells["transactions"]
+    assert (
+        fee["amount"] == 497.70
+    )  # processing fees only; the dispute fee lives in the ledger
+    assert not any(
+        w in world.writes for w in ("ledger:10", "ledger:11", "ledger:12")
+    )  # notes are locked
     writes = len(world.writes)
     assert world.run().counts["payout_unchanged"] == 1
     assert len(world.writes) == writes
