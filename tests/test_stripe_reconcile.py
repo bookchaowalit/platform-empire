@@ -568,6 +568,7 @@ def test_stale_fee_transaction_is_flagged_when_the_new_fee_is_zero():
         "amount": 535.0,
         "category": "payment_processing_fee",
         "source": "stripe",
+        "scope": "solo_empire",
         "description": "Stripe fees in payout po_1",
     }
     world.cells["transactions"].append(

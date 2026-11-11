@@ -561,10 +561,12 @@ def reconcile_payout(
         fee_txn = next(
             (
                 t
+                # The transactions cell filters only account_id/category/transaction_type/scope.
                 for t in finance.transactions.list(
-                    category="payment_processing_fee", source="stripe"
+                    category="payment_processing_fee", scope=SCOPE
                 )
-                if t.get("description") == f"Stripe fees in payout {payout_id}"
+                if t.get("source") == "stripe"
+                and t.get("description") == f"Stripe fees in payout {payout_id}"
             ),
             None,
         )
