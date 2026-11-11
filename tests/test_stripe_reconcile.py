@@ -416,13 +416,30 @@ def test_dispute_without_ledger_row_keeps_its_fee_and_is_an_exception():
 
 
 def _refund_txn(txn_id: str, refund_id: str, amount: int) -> dict:
-    return {"id": txn_id, "type": "refund", "amount": -amount, "fee": 0, "net": -amount, "currency": "thb",
-            "created": PAID_AT, "source": {"id": refund_id, "object": "refund", "charge": "ch_1"}}
+    return {
+        "id": txn_id,
+        "type": "refund",
+        "amount": -amount,
+        "fee": 0,
+        "net": -amount,
+        "currency": "thb",
+        "created": PAID_AT,
+        "source": {"id": refund_id, "object": "refund", "charge": "ch_1"},
+    }
 
 
 def _refund_row(row_id: int, minor: int) -> dict:
-    notes = {"source": "stripe-webhook-adjustment", "stripe": {"charge": "ch_1"}, "refund_minor": minor}
-    return {"id": row_id, "entry_type": "refund", "amount": -minor / 100, "notes": json.dumps(notes)}
+    notes = {
+        "source": "stripe-webhook-adjustment",
+        "stripe": {"charge": "ch_1"},
+        "refund_minor": minor,
+    }
+    return {
+        "id": row_id,
+        "entry_type": "refund",
+        "amount": -minor / 100,
+        "notes": json.dumps(notes),
+    }
 
 
 def test_equal_refunds_in_two_payouts_use_two_ledger_rows():
@@ -431,9 +448,14 @@ def test_equal_refunds_in_two_payouts_use_two_ledger_rows():
     world.bts["txn_re1"] = _refund_txn("txn_re1", "re_1", 100000)
     world.bts["txn_re2"] = _refund_txn("txn_re2", "re_2", 100000)
     world.in_payout["po_1"].append("txn_re1")
-    world.payouts[0]["amount"] = int(world.payouts[0]["amount"]) - 100000  # type: ignore[call-overload]
+    world.payouts[0]["amount"] = int(world.payouts[0]["amount"]) - 100000
     world.run()
-    later = {**world.payouts[0], "id": "po_2", "amount": 0, "arrival_date": ARRIVAL + 86400}
+    later = {
+        **world.payouts[0],
+        "id": "po_2",
+        "amount": 0,
+        "arrival_date": ARRIVAL + 86400,
+    }
     later["amount"] = -100000
     world.payouts.append(later)
     world.in_payout["po_2"] = ["txn_re2"]
@@ -446,11 +468,13 @@ def test_equal_refunds_in_two_payouts_use_two_ledger_rows():
 
 def test_one_cumulative_row_covers_two_refunds():
     world = World()
-    world.revenue.append(_refund_row(10, 300000))  # newest snapshot booked first: one row for both refunds
+    world.revenue.append(
+        _refund_row(10, 300000)
+    )  # newest snapshot booked first: one row for both refunds
     world.bts["txn_re1"] = _refund_txn("txn_re1", "re_1", 200000)
     world.bts["txn_re2"] = _refund_txn("txn_re2", "re_2", 100000)
     world.in_payout["po_1"] += ["txn_re1", "txn_re2"]
-    world.payouts[0]["amount"] = int(world.payouts[0]["amount"]) - 300000  # type: ignore[call-overload]
+    world.payouts[0]["amount"] = int(world.payouts[0]["amount"]) - 300000
     world.run()
     [recon] = world.cells["reconciliations"]
     notes = json.loads(recon["notes"])

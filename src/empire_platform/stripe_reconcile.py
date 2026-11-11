@@ -335,57 +335,100 @@ def _is_dispute_txn(txn: Mapping[str, Any]) -> bool:
     )
 
 
+def refund_minor(row: Mapping[str, Any]) -> int:
+    """Refunded minor units a ledger refund row stands for (its ``refund_minor`` note)."""
+    value = _notes(row).get("refund_minor")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return abs(value)
+    return round(abs(float(row.get("amount") or 0)) * 100)
+
+
+def refund_balances(
+    adjustments: list[dict[str, Any]], reconciliations: list[dict[str, Any]]
+) -> dict[int, int]:
+    """Unallocated minor units per ledger refund row, after earlier reconciliations' allocations."""
+    left = {
+        int(r["id"]): refund_minor(r)
+        for r in adjustments
+        if r.get("entry_type") == "refund"
+    }
+    for recon in reconciliations:
+        try:
+            notes = json.loads(recon.get("notes") or "{}")
+        except ValueError:
+            continue
+        allocations = (
+            notes.get("adjustment_allocations") if isinstance(notes, dict) else None
+        )
+        for row_id, minor in (allocations or {}).items():
+            if int(row_id) in left:
+                left[int(row_id)] = max(0, left[int(row_id)] - int(minor))
+    return left
+
+
 def match_adjustments(
-    txns: list[dict[str, Any]], adjustments: list[dict[str, Any]]
-) -> tuple[list[int], list[str], int]:
+    txns: list[dict[str, Any]],
+    adjustments: list[dict[str, Any]],
+    refund_left: dict[int, int] | None = None,
+) -> tuple[list[int], list[str], int, dict[int, int]]:
     """Tie refund/dispute balance transactions to crm-income adjustment rows (SPEC-001).
 
-    Returns the matched row ids, the unmatched balance transaction ids, and the dispute fee
-    (minor units) already booked as ledger ``dispute_fee`` rows, which the payout ``fee``
-    transaction must leave out so owner cash counts it once.
+    Refunds are allocated by amount against ``refund_left`` (unallocated minor units per refund
+    row, shared across payouts and updated in place), so one cumulative row can cover several
+    refunds and two equal refunds in different payouts use two rows. Returns the matched row
+    ids, the unmatched balance transaction ids, the dispute fee (minor units) already booked as
+    ledger ``dispute_fee`` rows (the payout ``fee`` transaction leaves it out), and the refund
+    allocations made here.
     """
+    left = refund_left if refund_left is not None else refund_balances(adjustments, [])
     matched: list[int] = []
     unmatched: list[str] = []
-    used: set[int] = set()
+    allocations: dict[int, int] = {}
     ledger_dispute_fee = 0
 
     def stripe_ids(row: Mapping[str, Any]) -> dict[str, Any]:
         found = _notes(row).get("stripe")
         return found if isinstance(found, dict) else {}
 
-    refunds = [r for r in adjustments if r.get("entry_type") == "refund"]
+    refunds = sorted(
+        (r for r in adjustments if r.get("entry_type") == "refund"),
+        key=lambda r: int(r["id"]),
+    )
     for txn in txns:
         raw_source = txn.get("source")
         source: dict[str, Any] = raw_source if isinstance(raw_source, dict) else {}
         if txn.get("type") in REFUND_TYPES:
             refund_id, charge = source.get("id"), source.get("charge")
-            candidates = [
+            own = [
                 r
                 for r in refunds
-                if int(r["id"]) not in used
-                and (
-                    (refund_id and stripe_ids(r).get("refund") == refund_id)
-                    or (
-                        charge
-                        and stripe_ids(r).get("charge") == charge
-                        and not stripe_ids(r).get("refund")
-                    )
-                )
+                if refund_id and stripe_ids(r).get("refund") == refund_id
             ]
-            exact = (
-                [r for r in candidates if stripe_ids(r).get("refund") == refund_id]
-                or [
-                    r
-                    for r in candidates
-                    if _notes(r).get("refund_minor") == -int(txn.get("amount") or 0)
-                ]
-                or candidates
-            )
-            if exact:
-                used.add(int(exact[0]["id"]))
-                matched.append(int(exact[0]["id"]))
-            else:
+            same_charge = [
+                r
+                for r in refunds
+                if charge
+                and stripe_ids(r).get("charge") == charge
+                and not stripe_ids(r).get("refund")
+            ]
+            need = abs(int(txn.get("amount") or 0))
+            taken: dict[int, int] = {}
+            for row in own + same_charge:
+                row_id = int(row["id"])
+                take = min(need, left.get(row_id, 0) - taken.get(row_id, 0))
+                if take > 0:
+                    taken[row_id] = taken.get(row_id, 0) + take
+                    need -= take
+                if need == 0:
+                    break
+            if need or not taken:
                 unmatched.append(str(txn["id"]))
+                continue
+            for row_id, take in taken.items():
+                left[row_id] -= take
+                allocations[row_id] = allocations.get(row_id, 0) + take
+                if row_id not in matched:
+                    matched.append(row_id)
         elif _is_dispute_txn(txn):
             rows = [
                 r
@@ -396,11 +439,10 @@ def match_adjustments(
             if not rows:
                 unmatched.append(str(txn["id"]))
                 continue
-            matched.extend(int(r["id"]) for r in rows if int(r["id"]) not in used)
-            used.update(int(r["id"]) for r in rows)
+            matched.extend(int(r["id"]) for r in rows if int(r["id"]) not in matched)
             if any(r.get("entry_type") == "dispute_fee" for r in rows):
                 ledger_dispute_fee += int(txn.get("fee") or 0)
-    return matched, unmatched, ledger_dispute_fee
+    return matched, unmatched, ledger_dispute_fee, allocations
 
 
 def reconcile_payout(
@@ -414,6 +456,7 @@ def reconcile_payout(
     *,
     dry_run: bool,
     adjustments: list[dict[str, Any]] | None = None,
+    refund_left: dict[int, int] | None = None,
 ) -> None:
     payout_id = payout["id"]
     if payout_id in done:
@@ -437,8 +480,8 @@ def reconcile_payout(
     unmatched = [t["id"] for t in payments if t["id"] not in by_bt]
     expected = _major(sum(t["net"] for t in txns), currency)
     paid = _major(payout["amount"], currency)
-    matched_adjustments, unmatched_adjustments, ledger_dispute_fee = match_adjustments(
-        txns, adjustments or []
+    matched_adjustments, unmatched_adjustments, ledger_dispute_fee, allocations = (
+        match_adjustments(txns, adjustments or [], refund_left)
     )
     # A dispute fee already in the ledger (dispute_fee row) stays out of the fee transaction.
     fees = _major(sum(t["fee"] for t in txns) - ledger_dispute_fee, currency)
@@ -464,6 +507,7 @@ def reconcile_payout(
         "matched_adjustment_ids": matched_adjustments,
         "unmatched_adjustment_balance_transactions": unmatched_adjustments,
         "dispute_fees_in_ledger": _major(ledger_dispute_fee, currency),
+        "adjustment_allocations": {str(k): v for k, v in allocations.items()},
     }
     if dry_run:
         report.log("would_reconcile", **summary)
@@ -567,10 +611,9 @@ def run(
         r for r in everything if _notes(r).get("source") == ADJUSTMENT_SOURCE
     ]
     record_fees(stripe, ledger, rows, report, dry_run=dry_run)
-    done = {
-        str(r.get("source_ref"))
-        for r in finance.reconciliations.list(source_type="wallet_export")
-    }
+    earlier = finance.reconciliations.list(source_type="wallet_export")
+    done = {str(r.get("source_ref")) for r in earlier}
+    refund_left = refund_balances(adjustments, earlier)
     since = int(time.time()) - days * 86400
     payouts = stripe.each(
         "/payouts",
@@ -589,6 +632,7 @@ def run(
                 report,
                 dry_run=dry_run,
                 adjustments=adjustments,
+                refund_left=refund_left,
             )
         except httpx.HTTPError as exc:
             capture(exc)
