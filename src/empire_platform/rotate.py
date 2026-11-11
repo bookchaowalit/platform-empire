@@ -63,7 +63,9 @@ def load_targets(path: Path = DEPLOYMENTS) -> tuple[list[Target], int]:
     for t in data["targets"]:
         if t["provider"] not in {"railway", "vercel", *HOSTED_ONLY}:
             raise ValueError(f"unknown provider {t['provider']!r}")
-    # Cloudflare and Infisical copies are pushed only by the hosted rotation (hosted_rotate).
+    # Cloudflare and Infisical copies are pushed only by the hosted rotation (hosted_rotate), and
+    # so is a Railway copy with its own "project": this CLI reaches Railway through the checkout's
+    # linked project, which would be the wrong one for it.
     targets = [
         Target(
             automation=t["automation"],
@@ -73,7 +75,7 @@ def load_targets(path: Path = DEPLOYMENTS) -> tuple[list[Target], int]:
             service=t.get("service"),
         )
         for t in data["targets"]
-        if t["provider"] not in HOSTED_ONLY
+        if t["provider"] not in HOSTED_ONLY and not t.get("project")
     ]
     for target in targets:
         if target.provider == "railway" and not target.service:

@@ -199,3 +199,13 @@ def test_local_tokens_are_renewed_but_short_lived_ones_are_not(tmp_path):
         "owner-cli": "local token expiring"
     }
     assert rotate.local_due(tokens, known, 10, NOW, skip={"owner-cli"}) == {}
+
+
+def test_railway_copy_with_its_own_project_is_left_to_the_hosted_rotation():
+    from empire_platform.hosted_rotate import load_hosted_targets
+
+    local, _ = rotate.load_targets()
+    hosted, _ = load_hosted_targets()
+    assert not any(t.automation == "hiring-radar" for t in local)
+    [radar] = [t for t in hosted if t.automation == "hiring-radar"]
+    assert (radar.project, radar.service) == ("data-schedules", "hiring-radar")
