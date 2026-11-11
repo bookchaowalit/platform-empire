@@ -340,7 +340,7 @@ def test_crm_audiences_only_for_the_named_automations():
 
     extras = extra_audiences(REGISTRY)
     assert extras == {
-        "owner-cli": ("crm-income-api",),
+        "owner-cli": ("crm-api", "crm-income-api"),
         "stripe-reconciler": ("crm-income-api",),
         "owner-mcp": ("crm-api", "crm-income-api"),
         "hiring-radar": ("crm-api",),

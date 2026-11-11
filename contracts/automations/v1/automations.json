@@ -674,6 +674,7 @@
         "tasks.task:write"
       ],
       "extra_audiences": [
+        "crm-api",
         "crm-income-api"
       ]
     },
