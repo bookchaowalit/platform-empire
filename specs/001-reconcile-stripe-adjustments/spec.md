@@ -36,6 +36,14 @@ Since sales-crm `f976d8b` the crm-income webhook writes signed adjustment rows
 - **Status.** `matched` needs the payout to equal its balance transactions, every payment matched and
   every refund/dispute balance transaction matched; otherwise `exception`.
 
+## Known limits
+
+- Reconciliations written before this spec have no `adjustment_allocations`, so their refunds are not
+  subtracted from the refund rows' balances. Not reachable on current data: crm-income had **no** refund
+  rows before the money-exception webhook (2026-11-11), and no reconciliation has run since with refund
+  rows (checked 2026-11-11: 10 ledger rows, all `revenue`). If an older reconciliation ever needs it,
+  backfill `adjustment_allocations` in its notes by hand.
+
 ## Acceptance (tests)
 
 - AC-1 refund + dispute rows of a payout are listed as matched; the fee transaction excludes the
@@ -47,6 +55,7 @@ Since sales-crm `f976d8b` the crm-income webhook writes signed adjustment rows
 - AC-5 one cumulative refund row covers two refund balance transactions in the same payout.
 - AC-6 a refund settled in another currency is allocated by the refund's own amount (`source.amount`, the
   charge currency of `refund_minor`), not the settlement amount.
+- AC-9 the stale-fee check also runs when the new fee is zero (the transaction is looked up instead of created).
 - AC-8 a dispute balance transaction is matched only when each non-zero part (amount, fee) has its own
   ledger row (`dispute`, `dispute_fee`).
 - AC-7 a fee transaction returned by its idempotency key with an amount other than the computed fee (an
