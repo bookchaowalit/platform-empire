@@ -355,7 +355,8 @@ def match_adjustments(
 
     refunds = [r for r in adjustments if r.get("entry_type") == "refund"]
     for txn in txns:
-        source = txn.get("source") if isinstance(txn.get("source"), dict) else {}
+        raw_source = txn.get("source")
+        source: dict[str, Any] = raw_source if isinstance(raw_source, dict) else {}
         if txn.get("type") in REFUND_TYPES:
             refund_id, charge = source.get("id"), source.get("charge")
             candidates = [

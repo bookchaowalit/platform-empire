@@ -377,7 +377,7 @@ def _with_adjustments(world: World, *, dispute_row: bool = True) -> None:
         "source": {"id": "dp_1", "object": "dispute", "charge": "ch_1"},
     }
     world.in_payout["po_1"] += ["txn_re", "txn_dp"]
-    world.payouts[0]["amount"] += -100000 - 743500
+    world.payouts[0]["amount"] = int(world.payouts[0]["amount"]) - 100000 - 743500  # type: ignore[call-overload]
 
 
 def test_refund_and_dispute_rows_match_and_dispute_fee_counts_once():
