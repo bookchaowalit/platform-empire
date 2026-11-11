@@ -208,6 +208,9 @@ CONTENT_OWNER = (
     "content.content-series-episode-metric:read",
     "content.content-series-episode-metric:write",
     "content.content-series-episode-metric:delete",
+    "content.campaign:read",
+    "content.campaign:write",
+    "content.campaign:delete",
 )
 
 LEARNING_OWNER = (
