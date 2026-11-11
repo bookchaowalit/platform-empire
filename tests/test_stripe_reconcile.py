@@ -517,3 +517,14 @@ def test_stale_fee_transaction_from_a_failed_run_makes_an_exception():
         "recorded": 1032.70,
         "expected": 497.70,
     }
+
+
+def test_dispute_with_only_a_fee_row_is_unmatched():
+    world = World()
+    _with_adjustments(world)
+    world.revenue = [r for r in world.revenue if r["id"] != 11]  # principal row missing, fee row present
+    world.run()
+    [recon] = world.cells["reconciliations"]
+    notes = json.loads(recon["notes"])
+    assert recon["status"] == "exception"
+    assert notes["unmatched_adjustment_balance_transactions"] == ["txn_dp"]
