@@ -481,3 +481,52 @@ def test_one_cumulative_row_covers_two_refunds():
     assert recon["status"] == "matched"
     assert notes["unmatched_adjustment_balance_transactions"] == []
     assert notes["matched_adjustment_ids"] == [10]
+
+
+def test_refund_in_another_currency_matches_by_refund_amount():
+    world = World()
+    world.revenue.append(
+        _refund_row(10, 1000)
+    )  # USD 10.00 refund booked in the charge currency
+    txn = _refund_txn("txn_re1", "re_1", 35000)  # settled as THB 350.00
+    txn["source"] = {**txn["source"], "amount": 1000, "currency": "usd"}
+    world.bts["txn_re1"] = txn
+    world.in_payout["po_1"].append("txn_re1")
+    world.payouts[0]["amount"] = int(world.payouts[0]["amount"]) - 35000
+    world.run()
+    [recon] = world.cells["reconciliations"]
+    notes = json.loads(recon["notes"])
+    assert notes["unmatched_adjustment_balance_transactions"] == []
+    assert notes["matched_adjustment_ids"] == [10]
+
+
+def test_stale_fee_transaction_from_a_failed_run_makes_an_exception():
+    world = World()
+    _with_adjustments(world)
+    # an earlier run created the fee transaction (dispute fee still inside) and died before the reconciliation
+    world.keys["stripe:po_1:fee"] = {
+        "id": 99,
+        "transaction_type": "fee",
+        "amount": 1032.70,
+    }
+    world.run()
+    [recon] = world.cells["reconciliations"]
+    notes = json.loads(recon["notes"])
+    assert recon["status"] == "exception"
+    assert notes["fee_transaction_mismatch"] == {
+        "recorded": 1032.70,
+        "expected": 497.70,
+    }
+
+
+def test_dispute_with_only_a_fee_row_is_unmatched():
+    world = World()
+    _with_adjustments(world)
+    world.revenue = [
+        r for r in world.revenue if r["id"] != 11
+    ]  # principal row missing, fee row present
+    world.run()
+    [recon] = world.cells["reconciliations"]
+    notes = json.loads(recon["notes"])
+    assert recon["status"] == "exception"
+    assert notes["unmatched_adjustment_balance_transactions"] == ["txn_dp"]
