@@ -16,6 +16,14 @@ PAID_AT = NOW - 9 * 86400
 ARRIVAL = NOW - 86400  # 2026-10-26 07:00 Bangkok
 
 
+# Filters each finance cell accepts (their cell.yaml); anything else is 422 unknown_filter.
+FILTERS = {
+    "accounts": {"account_type", "scope"},
+    "transactions": {"account_id", "category", "transaction_type", "scope"},
+    "reconciliations": {"source_type", "status", "account_id"},
+}
+
+
 class World:
     """In-memory Stripe, crm-income ledger and the three finance cells."""
 
@@ -160,6 +168,18 @@ class World:
                 query = {
                     k: v[0] for k, v in parse_qs(request.url.query.decode()).items()
                 }
+                # The real cells answer 422 unknown_filter for a filter not in cell.yaml.
+                unknown = set(query) - FILTERS[plural] - {"limit", "offset"}
+                if unknown:
+                    return httpx.Response(
+                        422,
+                        json={
+                            "detail": {
+                                "error": "unknown_filter",
+                                "fields": sorted(unknown),
+                            }
+                        },
+                    )
                 found = [
                     i
                     for i in items
