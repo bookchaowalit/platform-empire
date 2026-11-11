@@ -17,6 +17,19 @@ A reconciliation is `matched` when the payout equals the sum of its balance tran
 every payment in it has a ledger row; otherwise `exception`, with the unmatched balance
 transactions in its notes (for example the ฿10 readiness test paid before the webhook existed).
 
+Refunds and disputes (SPEC-001, `specs/001-stripe-reconcile-adjustments/spec.md`, needs
+sales-crm#12): the crm-income webhook writes them as signed ledger rows with notes
+`source = stripe-webhook-adjustment` (`entry_type` `refund`, `dispute`, `dispute_fee`). In a
+payout, a `refund` / `payment_refund` balance transaction must match a refund row (refund id,
+or the charge for the fallback row), and a dispute `adjustment` (`dispute`, `dispute_reversal`)
+must match the rows carrying its balance transaction id; otherwise it is listed in
+`unmatched_balance_transactions` and the reconciliation is `exception` (so is every
+`refund_failure`, which the ledger does not record yet). Matched ids go to the reconciliation
+notes as `matched_adjustment_ids`; the rows themselves are not written (crm-api answers 409
+`adjustment_notes_locked`). A dispute fee that has a `dispute_fee` row is left out of the payout
+`fee` transaction and shown as `dispute_fees_in_ledger`, so "ledger − fee transactions" counts
+it once; the `fee` transaction can then be lower than Stripe's fee total for that payout.
+
 Revenue stays in the ledger and is not copied to transactions: transactions hold only cash
 movements (payout transfer, fees), so owner-cash reporting does not count income twice.
 

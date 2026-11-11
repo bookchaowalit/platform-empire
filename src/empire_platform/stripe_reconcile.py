@@ -18,6 +18,11 @@ This job finishes the Order-to-Cash trail:
    - create the reconciliation last: ``expected_amount`` is the sum of the payout's balance
      transactions, ``reconciled_amount`` the payout; ``matched`` when they agree and every
      payment in it has a ledger row, otherwise ``exception`` with the unmatched ids in notes.
+   - refunds and disputes in the payout (SPEC-001) are matched to the ledger's adjusting
+     rows (notes ``source = "stripe-webhook-adjustment"``: refund id or charge, dispute
+     balance transaction id); one without a row makes the reconciliation an ``exception``.
+     Those rows are only read (crm-api locks their notes). A dispute fee the ledger holds as
+     a ``dispute_fee`` row is left out of the ``fee`` transaction so it is not counted twice.
 
 Revenue stays in the ledger; transactions hold only cash movements (payout transfer and
 fees), so owner-cash reporting does not count income twice. Every write is idempotent
@@ -79,6 +84,14 @@ ZERO_DECIMAL = {
     "xpf",
 }
 PAYMENT_TYPES = {"charge", "payment"}
+# SPEC-001: refunds and disputes are checked against the ledger's adjusting rows.
+REFUND_TYPES = {"refund", "payment_refund"}
+REFUND_FAILURE_TYPES = {
+    "refund_failure",
+    "payment_failure_refund",
+}  # no ledger entry upstream yet
+DISPUTE_CATEGORIES = {"dispute", "dispute_reversal"}
+ADJUSTMENT_SOURCE = "stripe-webhook-adjustment"
 
 
 def _major(amount: int, currency: str) -> float:
@@ -95,6 +108,69 @@ def _notes(row: Mapping[str, Any]) -> dict[str, Any]:
     except ValueError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _source(txn: Mapping[str, Any]) -> dict[str, Any]:
+    source = txn.get("source")
+    if isinstance(source, dict):
+        return source
+    return {"id": source} if isinstance(source, str) else {}
+
+
+def _is_dispute(txn: Mapping[str, Any]) -> bool:
+    return txn.get("type") == "adjustment" and (
+        txn.get("reporting_category") in DISPUTE_CATEGORIES
+        or _source(txn).get("object") == "dispute"
+    )
+
+
+def match_adjustments(
+    txns: list[dict[str, Any]], adjustments: list[dict[str, Any]]
+) -> tuple[list[int], list[str], int]:
+    """Refund and dispute balance transactions of a payout -> ledger adjustment rows.
+
+    Returns the matched adjustment row ids, the unmatched balance transaction ids and the
+    fees (minor units) the ledger already holds as ``dispute_fee`` rows.
+    """
+    by_refund: dict[str, int] = {}
+    fallback_by_charge: dict[str, int] = {}
+    by_bt: dict[str, list[dict[str, Any]]] = {}
+    for row in adjustments:
+        ids = _notes(row).get("stripe") or {}
+        entry = row.get("entry_type") or _notes(row).get("entry")
+        if entry == "refund":
+            if ids.get("refund"):
+                by_refund[str(ids["refund"])] = int(row["id"])
+            elif ids.get("charge"):
+                fallback_by_charge.setdefault(str(ids["charge"]), int(row["id"]))
+        elif entry in ("dispute", "dispute_fee") and ids.get("balance_transaction"):
+            by_bt.setdefault(str(ids["balance_transaction"]), []).append(row)
+    matched: list[int] = []
+    unmatched: list[str] = []
+    fees_in_ledger = 0
+    for txn in txns:
+        if txn["type"] in REFUND_TYPES:
+            source = _source(txn)
+            row_id = by_refund.get(str(source.get("id"))) or fallback_by_charge.get(
+                str(source.get("charge"))
+            )
+            if row_id is None:
+                unmatched.append(txn["id"])
+            elif row_id not in matched:
+                matched.append(row_id)
+        elif txn["type"] in REFUND_FAILURE_TYPES:
+            unmatched.append(txn["id"])
+        elif _is_dispute(txn):
+            rows = by_bt.get(txn["id"], [])
+            entries = {r.get("entry_type") or _notes(r).get("entry") for r in rows}
+            moved = "dispute" in entries or not txn.get("amount")
+            fee_ok = "dispute_fee" in entries or not txn.get("fee")
+            matched.extend(int(r["id"]) for r in rows if int(r["id"]) not in matched)
+            if "dispute_fee" in entries:
+                fees_in_ledger += int(txn.get("fee") or 0)
+            if not (moved and fee_ok):
+                unmatched.append(txn["id"])
+    return matched, unmatched, fees_in_ledger
 
 
 @dataclass
@@ -182,6 +258,7 @@ class Ledger:
         self.client = client
 
     def stripe_rows(self) -> list[dict[str, Any]]:
+        """Payment rows (``source = stripe-webhook``) and adjusting rows (SPEC-001)."""
         rows: list[dict[str, Any]] = []
         while True:
             response = self.client.get(
@@ -191,7 +268,8 @@ class Ledger:
             page = response.json()["items"]
             rows.extend(page)
             if len(page) < 500:
-                return [r for r in rows if _notes(r).get("source") == "stripe-webhook"]
+                sources = ("stripe-webhook", ADJUSTMENT_SOURCE)
+                return [r for r in rows if _notes(r).get("source") in sources]
 
     def set_notes(self, row_id: int, notes: Mapping[str, Any]) -> None:
         response = self.client.patch(
@@ -245,7 +323,7 @@ def record_fees(
 ) -> None:
     for row in rows:
         notes = _notes(row)
-        if notes.get("fee") is not None:
+        if notes.get("source") != "stripe-webhook" or notes.get("fee") is not None:
             continue
         try:
             bt = stripe.balance_transaction(notes.get("stripe") or {})
@@ -334,20 +412,27 @@ def reconcile_payout(
     currency = str(payout["currency"])
     txns = [
         t
-        for t in stripe.each("/balance_transactions", payout=payout_id)
+        for t in stripe.each(
+            "/balance_transactions", payout=payout_id, **{"expand[]": "data.source"}
+        )
         if t["type"] != "payout"
     ]
+    payment_rows = [r for r in rows if _notes(r).get("source") == "stripe-webhook"]
+    adjustments = [r for r in rows if _notes(r).get("source") == ADJUSTMENT_SOURCE]
     by_bt = {
         _notes(r).get("balance_transaction"): r
-        for r in rows
+        for r in payment_rows
         if _notes(r).get("balance_transaction")
     }
     payments = [t for t in txns if t["type"] in PAYMENT_TYPES]
     matched = [by_bt[t["id"]] for t in payments if t["id"] in by_bt]
     unmatched = [t["id"] for t in payments if t["id"] not in by_bt]
+    adjusted, unmatched_adjustments, ledger_fees = match_adjustments(txns, adjustments)
+    unmatched += unmatched_adjustments
     expected = _major(sum(t["net"] for t in txns), currency)
     paid = _major(payout["amount"], currency)
-    fees = _major(sum(t["fee"] for t in txns), currency)
+    # A dispute fee the ledger holds as a dispute_fee row is not a fee transaction too (SPEC-001).
+    fees = _major(sum(t["fee"] for t in txns) - ledger_fees, currency)
     difference = round(expected - paid, 2)
     status = "matched" if abs(difference) < 0.005 and not unmatched else "exception"
     raw_destination = payout.get("destination")
@@ -362,6 +447,8 @@ def reconcile_payout(
         "expected": expected,
         "status": status,
         "matched_revenue_ids": [r["id"] for r in matched],
+        "matched_adjustment_ids": adjusted,
+        "dispute_fees_in_ledger": _major(ledger_fees, currency),
         "unmatched_balance_transactions": unmatched,
     }
     if dry_run:

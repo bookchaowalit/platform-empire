@@ -324,10 +324,17 @@ ADJ = "stripe-webhook-adjustment"
 
 def _adjustment(row_id: int, entry: str, amount: float, stripe: dict) -> dict:
     notes = {"source": ADJ, "entry": entry, "stripe": stripe}
-    return {"id": row_id, "entry_type": entry, "amount": amount, "notes": json.dumps(notes)}
+    return {
+        "id": row_id,
+        "entry_type": entry,
+        "amount": amount,
+        "notes": json.dumps(notes),
+    }
 
 
-def _refund_bt(txn: str, refund: str, charge: str, amount: int, kind: str = "refund") -> dict:
+def _refund_bt(
+    txn: str, refund: str, charge: str, amount: int, kind: str = "refund"
+) -> dict:
     return {
         "id": txn,
         "type": kind,
@@ -363,7 +370,9 @@ def _add(world: World, *bts: dict) -> None:
 
 def test_adjustment_rows_are_not_payments():
     world = World()
-    world.revenue.append(_adjustment(10, "refund", -1000.0, {"charge": "ch_1", "refund": "re_1"}))
+    world.revenue.append(
+        _adjustment(10, "refund", -1000.0, {"charge": "ch_1", "refund": "re_1"})
+    )
     report = world.run()
     assert report.counts["errors"] == 0
     assert report.counts["fee_recorded"] == 2  # only the two payments
@@ -373,7 +382,9 @@ def test_adjustment_rows_are_not_payments():
 
 def test_refund_matches_its_adjustment_row():
     world = World()
-    world.revenue.append(_adjustment(10, "refund", -1000.0, {"charge": "ch_1", "refund": "re_1"}))
+    world.revenue.append(
+        _adjustment(10, "refund", -1000.0, {"charge": "ch_1", "refund": "re_1"})
+    )
     _add(world, _refund_bt("txn_re1", "re_1", "ch_1", 100000))
     world.run()
     [recon] = world.cells["reconciliations"]
@@ -401,14 +412,27 @@ def test_refund_without_ledger_row_is_an_exception():
     world.run()
     [recon] = world.cells["reconciliations"]
     assert recon["status"] == "exception"
-    assert json.loads(recon["notes"])["unmatched_balance_transactions"] == ["txn_re1", "txn_rf1"]
+    assert json.loads(recon["notes"])["unmatched_balance_transactions"] == [
+        "txn_re1",
+        "txn_rf1",
+    ]
 
 
 def test_dispute_matches_and_its_fee_is_not_counted_twice():
     world = World()
     world.revenue += [
-        _adjustment(11, "dispute", -6900.0, {"dispute": "dp_1", "balance_transaction": "txn_dp1"}),
-        _adjustment(12, "dispute_fee", -15.0, {"dispute": "dp_1", "balance_transaction": "txn_dp1"}),
+        _adjustment(
+            11,
+            "dispute",
+            -6900.0,
+            {"dispute": "dp_1", "balance_transaction": "txn_dp1"},
+        ),
+        _adjustment(
+            12,
+            "dispute_fee",
+            -15.0,
+            {"dispute": "dp_1", "balance_transaction": "txn_dp1"},
+        ),
     ]
     _add(world, _dispute_bt("txn_dp1", -690000, 1500))
     world.run()
@@ -419,14 +443,22 @@ def test_dispute_matches_and_its_fee_is_not_counted_twice():
     assert notes["dispute_fees_in_ledger"] == 15.0
     assert notes["fees"] == 497.70
     _, fee = world.cells["transactions"]
-    assert fee["amount"] == 497.70  # payment fees only; the dispute fee is the ledger's dispute_fee row
-    assert recon["expected_amount"] == recon["reconciled_amount"] == round(21302.30 - 6915.0, 2)
+    assert (
+        fee["amount"] == 497.70
+    )  # payment fees only; the dispute fee is the ledger's dispute_fee row
+    assert (
+        recon["expected_amount"]
+        == recon["reconciled_amount"]
+        == round(21302.30 - 6915.0, 2)
+    )
 
 
 def test_dispute_reversal_matches_and_unrecorded_fee_stays_in_fee_transaction():
     world = World()
     world.revenue.append(
-        _adjustment(13, "dispute", 6900.0, {"dispute": "dp_1", "balance_transaction": "txn_dp2"})
+        _adjustment(
+            13, "dispute", 6900.0, {"dispute": "dp_1", "balance_transaction": "txn_dp2"}
+        )
     )
     _add(world, _dispute_bt("txn_dp2", 690000, 0, category="dispute_reversal"))
     _add(world, _dispute_bt("txn_dp3", -690000, 1500))  # no ledger rows at all

@@ -65,7 +65,7 @@ transfer = payout = sum of nets.
 
 | AC | Test | Red | Green |
 |---|---|---|---|
-| AC-01..AC-09 | `tests/test_stripe_reconcile.py` (`test_refund_*`, `test_dispute_*`, `test_adjustment_rows_are_not_payments`) | see commit | see commit |
+| AC-01..AC-09 | `tests/test_stripe_reconcile.py` (`test_refund_*`, `test_dispute_*`, `test_adjustment_rows_are_not_payments`) | d115e8d · `uv run --python 3.12 --extra dev pytest tests/test_stripe_reconcile.py` · `10 failed, 2 passed` (no `expand[]=data.source`, `KeyError: matched_adjustment_ids`) | 12 passed locally; CI run of the PR tip |
 
 ## Change log
 
