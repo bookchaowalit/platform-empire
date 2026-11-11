@@ -530,3 +530,22 @@ def test_dispute_with_only_a_fee_row_is_unmatched():
     notes = json.loads(recon["notes"])
     assert recon["status"] == "exception"
     assert notes["unmatched_adjustment_balance_transactions"] == ["txn_dp"]
+
+
+def test_stale_fee_transaction_is_flagged_when_the_new_fee_is_zero():
+    world = World()
+    _with_adjustments(world)
+    for bt_id in ("txn_pi1", "txn_in1"):  # no processing fee: the dispute fee is the only fee
+        bt = world.bts[bt_id]
+        world.payouts[0]["amount"] = int(world.payouts[0]["amount"]) + int(bt["fee"])
+        bt["net"], bt["fee"] = bt["amount"], 0
+    stale = {"id": 99, "transaction_type": "fee", "amount": 535.0, "category": "payment_processing_fee",
+             "source": "stripe", "description": "Stripe fees in payout po_1"}
+    world.cells["transactions"].append(stale)  # left by an interrupted run before the dispute_fee row
+    world.keys["stripe:po_1:fee"] = stale
+    world.run()
+    [recon] = world.cells["reconciliations"]
+    notes = json.loads(recon["notes"])
+    assert recon["status"] == "exception"
+    assert notes["fee_transaction_mismatch"] == {"recorded": 535.0, "expected": 0.0}
+    assert notes["fee_transaction_id"] == 99
