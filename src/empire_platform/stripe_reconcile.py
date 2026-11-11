@@ -556,7 +556,19 @@ def reconcile_payout(
         key=f"stripe:{payout_id}:transfer",
     )
     fee_txn = None
-    if fees > 0:
+    if fees <= 0:
+        # Nothing to create, but an interrupted earlier run may have left a fee transaction.
+        fee_txn = next(
+            (
+                t
+                for t in finance.transactions.list(
+                    category="payment_processing_fee", source="stripe"
+                )
+                if t.get("description") == f"Stripe fees in payout {payout_id}"
+            ),
+            None,
+        )
+    else:
         fee_txn = finance.transactions.create(
             {
                 "transaction_date": arrival,
@@ -573,15 +585,16 @@ def reconcile_payout(
             },
             key=f"stripe:{payout_id}:fee",
         )
-        # The key may return a fee transaction from an earlier, interrupted run with another amount
-        # (for example before a dispute_fee row reached the ledger); flag it instead of trusting it.
+    # The key may return a fee transaction from an earlier, interrupted run with another amount
+    # (for example before a dispute_fee row reached the ledger); flag it instead of trusting it.
+    if fee_txn is not None:
         recorded = round(float(fee_txn.get("amount") or 0), 2)
-        if abs(recorded - fees) >= 0.005:
+        if abs(recorded - max(fees, 0)) >= 0.005:
             status = "exception"
             summary["status"] = status
             summary["fee_transaction_mismatch"] = {
                 "recorded": recorded,
-                "expected": fees,
+                "expected": max(fees, 0.0),
             }
     for row in matched:
         notes = _notes(row)
