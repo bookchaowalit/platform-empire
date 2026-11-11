@@ -67,6 +67,9 @@ class TokenVerifier:
     extra_public_key_pems: tuple[str, ...] = ()
     # Optional second gate: (identity, workspace) pairs MCP tokens may name; None = any mapped by empire-mcp.
     mcp_subjects: frozenset[tuple[uuid.UUID, uuid.UUID]] | None = None
+    # platform-identity (customer sign-in): a third issuer with its own key; its tokens never delegate.
+    identity_issuer: str | None = None
+    identity_public_key_pem: str | None = None
 
     def __post_init__(self) -> None:
         if not 0 < self.max_lifetime <= HARD_MAX_LIFETIME_SECONDS:
@@ -77,6 +80,17 @@ class TokenVerifier:
             raise ValueError("mcp_issuer and mcp_public_key_pem must be given together")
         if self.mcp_issuer is not None and self.mcp_issuer == self.issuer:
             raise ValueError("the MCP issuer must differ from the main issuer")
+        if (self.identity_issuer is None) != (self.identity_public_key_pem is None):
+            raise ValueError(
+                "identity_issuer and identity_public_key_pem must be given together"
+            )
+        if self.identity_issuer is not None and self.identity_issuer in (
+            self.issuer,
+            self.mcp_issuer,
+        ):
+            raise ValueError(
+                "the identity issuer must differ from the main and MCP issuers"
+            )
 
     def verify(self, authorization: str | None, channel: str | None) -> Principal:
         if not authorization or not authorization.startswith("Bearer "):
@@ -87,6 +101,11 @@ class TokenVerifier:
             and self._unverified_issuer(token) == self.mcp_issuer
         ):
             return self._verify_mcp(token, channel)
+        if (
+            self.identity_issuer is not None
+            and self._unverified_issuer(token) == self.identity_issuer
+        ):
+            return self._verify_identity(token, channel)
         try:
             claims = self._decode_main(token)
             lifetime = claims["exp"] - claims["iat"]
@@ -153,6 +172,44 @@ class TokenVerifier:
         except jwt.PyJWTError:
             return None
         return issuer if isinstance(issuer, str) else None
+
+    def _verify_identity(self, token: str, channel: str | None) -> Principal:
+        # Only reached when identity_issuer is set, and __post_init__ requires both or neither.
+        assert self.identity_public_key_pem is not None
+        try:
+            claims = jwt.decode(
+                token,
+                self.identity_public_key_pem,
+                algorithms=["RS256"],
+                audience=self.audience,
+                issuer=self.identity_issuer,
+                options={"require": [*REQUIRED_CLAIMS, "ws"]},
+            )
+            if claims["exp"] - claims["iat"] > MAX_LIFETIME_SECONDS:
+                raise Unauthenticated("token lifetime too long")
+            if any(name in claims for name in ("del", "obo", "act")):
+                raise Unauthenticated("identity tokens carry no delegation")
+            actor = uuid.UUID(claims["sub"])
+            workspace = uuid.UUID(claims["ws"])
+        except Unauthenticated:
+            raise
+        except (jwt.PyJWTError, KeyError, ValueError, TypeError) as exc:
+            raise Unauthenticated("invalid token") from exc
+        channel = channel or "api"
+        if channel not in CHANNELS:
+            raise Unauthenticated("unknown channel")
+        scopes = (
+            frozenset(str(claims["scope"]).split()) if claims.get("scope") else None
+        )
+        return Principal(
+            actor=actor,
+            workspace=workspace,
+            initiated_by=actor,
+            on_behalf_of=actor,
+            delegation=None,
+            channel=channel,
+            scopes=scopes,
+        )
 
     def _verify_mcp(self, token: str, channel: str | None) -> Principal:
         # Only reached when mcp_issuer is set, and __post_init__ requires both or neither.

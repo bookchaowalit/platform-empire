@@ -1903,6 +1903,9 @@ class ServerConfig:
     mcp_subjects: frozenset[tuple[uuid.UUID, uuid.UUID]] | None = None
     # TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM: a second main-issuer key during a signing-key rollover.
     next_public_key_pem: str | None = None
+    # TASKS_API_IDENTITY_ISSUER + TASKS_API_IDENTITY_PUBLIC_KEY_PEM: platform-identity tokens (both or neither).
+    identity_issuer: str | None = None
+    identity_public_key_pem: str | None = None
 
     @property
     def main_public_key_pems(self) -> tuple[str, ...]:
@@ -1941,6 +1944,9 @@ def server_config(env: Mapping[str, str] | None = None) -> ServerConfig:
     next_pem = _next_key(env, hosted, pem, mcp_pem)
     # Ignored while MCP trust is off, so unsetting the key alone always cuts MCP off.
     mcp_subjects = _mcp_subjects(env.get("TASKS_API_MCP_SUBJECTS")) if mcp_pem else None
+    identity_issuer, identity_pem = _identity_trust(
+        env, hosted, issuer, pem, mcp_issuer, mcp_pem
+    )
     return ServerConfig(
         pem,
         issuer,
@@ -1951,6 +1957,8 @@ def server_config(env: Mapping[str, str] | None = None) -> ServerConfig:
         mcp_pem,
         mcp_subjects,
         next_pem,
+        identity_issuer,
+        identity_pem,
     )
 
 
@@ -2012,6 +2020,37 @@ def _mcp_trust(
     return mcp_issuer, mcp_pem
 
 
+def _identity_trust(
+    env: Mapping[str, str],
+    hosted: bool,
+    issuer: str,
+    pem: str,
+    mcp_issuer: str | None,
+    mcp_pem: str | None,
+) -> tuple[str | None, str | None]:
+    """platform-identity is trusted only with both its issuer and its own public key."""
+    identity_issuer = env.get("TASKS_API_IDENTITY_ISSUER", "").strip()
+    identity_pem = env.get("TASKS_API_IDENTITY_PUBLIC_KEY_PEM", "").strip()
+    if not identity_issuer and not identity_pem:
+        return None, None
+    if not (identity_issuer and identity_pem):
+        raise SystemExit(
+            "set both TASKS_API_IDENTITY_ISSUER and TASKS_API_IDENTITY_PUBLIC_KEY_PEM, or neither"
+        )
+    if identity_issuer in (issuer, DEV_ISSUER, mcp_issuer):
+        raise SystemExit(
+            "TASKS_API_IDENTITY_ISSUER must differ from the main, dev and MCP issuers"
+        )
+    digest = _pem_digest(identity_pem)
+    if digest in (_pem_digest(pem), _pem_digest(mcp_pem) if mcp_pem else None):
+        raise SystemExit(
+            "the identity public key must differ from the main and MCP keys"
+        )
+    if hosted and digest == _dev_key_digest():
+        raise SystemExit("hosted mode refuses the dev public key for identity")
+    return identity_issuer, identity_pem
+
+
 def main() -> None:
     import uvicorn
 
@@ -2026,6 +2065,8 @@ def main() -> None:
         mcp_public_key_pem=config.mcp_public_key_pem,
         mcp_subjects=config.mcp_subjects,
         extra_public_key_pems=config.main_public_key_pems[1:],
+        identity_issuer=config.identity_issuer,
+        identity_public_key_pem=config.identity_public_key_pem,
     )
     cluster = default_cluster()
     app = create_app(lambda: cluster.connect("tasks_api"), verifier)
@@ -2052,6 +2093,8 @@ def main() -> None:
             audience="platform-api",
             max_lifetime=config.max_lifetime,
             extra_public_key_pems=config.main_public_key_pems[1:],
+            identity_issuer=config.identity_issuer,
+            identity_public_key_pem=config.identity_public_key_pem,
         ),
         graph_verifier=TokenVerifier(
             config.public_key_pem,
