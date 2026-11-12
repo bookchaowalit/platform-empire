@@ -145,6 +145,18 @@ BEGIN
 END
 $$;
 
+-- The same rule for a member a non-owner manages: it must hold every permission of the member's current roles.
+CREATE FUNCTION platform.tenancy_require_member_permissions(p_caller uuid, p_workspace uuid, p_member uuid)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    PERFORM platform.tenancy_require_role_permissions(p_caller, p_workspace, ARRAY(
+        SELECT r.name FROM platform.membership_roles mr
+        JOIN platform.roles r ON r.workspace_id = mr.workspace_id AND r.id = mr.role_id
+        WHERE mr.workspace_id = p_workspace AND mr.identity_id = p_member));
+END
+$$;
+
 -- Lock the owner rows, then refuse if no active human owner would remain.
 CREATE FUNCTION platform.tenancy_check_owners(p_workspace uuid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -428,6 +440,8 @@ BEGIN
         RAISE EXCEPTION 'invalid_status' USING ERRCODE = 'invalid_parameter_value';
     END IF;
     v_was_owner := platform.tenancy_holds_owner(p_member, p_workspace);
+    -- Any change to a member (roles or status) needs the caller to hold what the member holds now.
+    PERFORM platform.tenancy_require_member_permissions(p_caller, p_workspace, p_member);
     PERFORM platform.tenancy_audit(p_caller, 'member.updated', 'identity', p_member::text);
     IF p_roles IS NOT NULL THEN
         IF EXISTS (SELECT 1 FROM unnest(p_roles) r WHERE r LIKE 'installation:%') THEN
@@ -468,6 +482,7 @@ BEGIN
     IF platform.tenancy_holds_owner(p_member, p_workspace) AND NOT platform.tenancy_is_owner(p_caller, p_workspace) THEN
         RAISE EXCEPTION 'forbidden' USING ERRCODE = 'insufficient_privilege';
     END IF;
+    PERFORM platform.tenancy_require_member_permissions(p_caller, p_workspace, p_member);
     -- The execution is recorded first: the caller may be removing itself.
     PERFORM platform.tenancy_audit(p_caller, 'member.removed', 'identity', p_member::text);
     DELETE FROM platform.membership_roles WHERE workspace_id = p_workspace AND identity_id = p_member;

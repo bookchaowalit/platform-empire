@@ -228,7 +228,9 @@ def ensure_runtime_roles(migrator_url: str, existing: dict[str, str]) -> dict[st
         conn.execute(
             sql.SQL(
                 "{} ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT"
-            ).format(sql.SQL("ALTER" if present else "CREATE"), sql.Identifier(TENANCY_OWNER))
+            ).format(
+                sql.SQL("ALTER" if present else "CREATE"), sql.Identifier(TENANCY_OWNER)
+            )
         )
         # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- DDL is composed with psycopg sql.SQL/sql.Identifier, which quote identifiers
         conn.execute(
