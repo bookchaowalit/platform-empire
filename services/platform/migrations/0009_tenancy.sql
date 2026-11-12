@@ -118,6 +118,33 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
           AND m.status = 'active' AND i.status = 'active' AND i.kind = 'human')
 $$;
 
+-- Holds the owner role whatever the membership status: a suspended owner is still an owner to protect.
+CREATE FUNCTION platform.tenancy_holds_owner(p_identity uuid, p_workspace uuid) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM platform.membership_roles mr
+        JOIN platform.roles r ON r.workspace_id = mr.workspace_id AND r.id = mr.role_id
+        WHERE mr.workspace_id = p_workspace AND mr.identity_id = p_identity AND r.name = 'owner')
+$$;
+
+-- A non-owner may only hand out roles whose every permission it holds itself.
+CREATE FUNCTION platform.tenancy_require_role_permissions(p_caller uuid, p_workspace uuid, p_roles text[])
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    IF platform.tenancy_is_owner(p_caller, p_workspace) THEN
+        RETURN;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM platform.roles r
+        JOIN platform.role_permissions rp ON rp.workspace_id = r.workspace_id AND rp.role_id = r.id
+        WHERE r.workspace_id = p_workspace AND r.name = ANY (p_roles)
+          AND NOT platform.direct_permission(p_caller, rp.permission)) THEN
+        RAISE EXCEPTION 'insufficient_privilege' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+END
+$$;
+
 -- Lock the owner rows, then refuse if no active human owner would remain.
 CREATE FUNCTION platform.tenancy_check_owners(p_workspace uuid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -178,7 +205,7 @@ $$;
 -- --- entry points for identity_api ----------------------------------------------------------------
 
 CREATE FUNCTION platform.tenancy_signup(
-    p_subject text, p_subject_hmac text, p_display_name text, p_product text, p_slug text, p_name text,
+    p_subject text, p_subject_hmacs text[], p_display_name text, p_product text, p_slug text, p_name text,
     p_max_owned integer, p_roles jsonb, p_installs jsonb
 ) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -196,10 +223,15 @@ BEGIN
     IF p_roles IS NULL OR NOT p_roles ? 'owner' THEN
         RAISE EXCEPTION 'invalid_roles' USING ERRCODE = 'invalid_parameter_value';
     END IF;
-    PERFORM pg_advisory_xact_lock(hashtextextended('tenancy-signup:' || p_subject_hmac, 0));
+    -- p_subject_hmacs: the HMAC under the current key first, then the previous key during a rotation.
+    IF cardinality(p_subject_hmacs) IS NULL OR cardinality(p_subject_hmacs) NOT BETWEEN 1 AND 2 THEN
+        RAISE EXCEPTION 'invalid_request' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    PERFORM pg_advisory_xact_lock(hashtextextended('tenancy-signup:' || p_subject, 0));
     SELECT s.workspace_id, w.slug INTO v_ws, v_slug
     FROM platform.signups s JOIN platform.workspaces w ON w.id = s.workspace_id
-    WHERE s.subject_hmac = p_subject_hmac AND s.product = p_product;
+    WHERE s.subject_hmac = ANY (p_subject_hmacs) AND s.product = p_product
+    LIMIT 1;
     SELECT id, status INTO v_identity, v_status FROM platform.identities WHERE external_subject = p_subject;
     IF v_status = 'disabled' THEN
         RAISE EXCEPTION 'invalid_grant' USING ERRCODE = 'insufficient_privilege';
@@ -239,7 +271,7 @@ BEGIN
     FOR v_client IN SELECT value FROM jsonb_array_elements(coalesce(p_installs, '[]'::jsonb)) LOOP
         PERFORM platform.tenancy_add_installation(v_ws, v_client);
     END LOOP;
-    INSERT INTO platform.signups (subject_hmac, product, workspace_id) VALUES (p_subject_hmac, p_product, v_ws);
+    INSERT INTO platform.signups (subject_hmac, product, workspace_id) VALUES (p_subject_hmacs[1], p_product, v_ws);
     PERFORM platform.tenancy_audit(v_identity, 'workspace.created', 'workspace', v_ws::text);
     RETURN jsonb_build_object('workspace_id', v_ws, 'slug', p_slug, 'identity_id', v_identity, 'created', true);
 END
@@ -278,6 +310,7 @@ BEGIN
     IF v_role IS NULL THEN
         RAISE EXCEPTION 'invalid_role' USING ERRCODE = 'invalid_parameter_value';
     END IF;
+    PERFORM platform.tenancy_require_role_permissions(p_caller, p_workspace, ARRAY[p_role]);
     INSERT INTO platform.invitations (workspace_id, email_hmac, email_hint, code_hmac, role_id, expires_at, created_by)
     VALUES (p_workspace, p_email_hmac, p_email_hint, p_code_hmac, v_role, v_exp, p_caller)
     RETURNING id INTO v_id;
@@ -394,7 +427,7 @@ BEGIN
     IF p_status IS NOT NULL AND p_status NOT IN ('active', 'suspended') THEN
         RAISE EXCEPTION 'invalid_status' USING ERRCODE = 'invalid_parameter_value';
     END IF;
-    v_was_owner := platform.tenancy_is_owner(p_member, p_workspace);
+    v_was_owner := platform.tenancy_holds_owner(p_member, p_workspace);
     PERFORM platform.tenancy_audit(p_caller, 'member.updated', 'identity', p_member::text);
     IF p_roles IS NOT NULL THEN
         IF EXISTS (SELECT 1 FROM unnest(p_roles) r WHERE r LIKE 'installation:%') THEN
@@ -405,17 +438,17 @@ BEGIN
         IF v_unknown > 0 THEN
             RAISE EXCEPTION 'invalid_role' USING ERRCODE = 'invalid_parameter_value';
         END IF;
-        IF (v_was_owner OR 'owner' = ANY (p_roles)) AND v_was_owner IS DISTINCT FROM ('owner' = ANY (p_roles))
-           AND NOT platform.tenancy_is_owner(p_caller, p_workspace) THEN
+        IF (v_was_owner OR 'owner' = ANY (p_roles)) AND NOT platform.tenancy_is_owner(p_caller, p_workspace) THEN
             RAISE EXCEPTION 'forbidden' USING ERRCODE = 'insufficient_privilege';
         END IF;
+        PERFORM platform.tenancy_require_role_permissions(p_caller, p_workspace, p_roles);
         DELETE FROM platform.membership_roles WHERE workspace_id = p_workspace AND identity_id = p_member;
         INSERT INTO platform.membership_roles (workspace_id, identity_id, role_id)
         SELECT p_workspace, p_member, r.id FROM platform.roles r
         WHERE r.workspace_id = p_workspace AND r.name = ANY (p_roles);
     END IF;
     IF p_status IS NOT NULL THEN
-        IF v_was_owner AND p_status = 'suspended' AND NOT platform.tenancy_is_owner(p_caller, p_workspace) THEN
+        IF v_was_owner AND NOT platform.tenancy_is_owner(p_caller, p_workspace) THEN
             RAISE EXCEPTION 'forbidden' USING ERRCODE = 'insufficient_privilege';
         END IF;
         UPDATE platform.memberships SET status = p_status WHERE workspace_id = p_workspace AND identity_id = p_member;
@@ -432,7 +465,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM platform.memberships WHERE workspace_id = p_workspace AND identity_id = p_member) THEN
         RAISE EXCEPTION 'not_found' USING ERRCODE = 'no_data_found';
     END IF;
-    IF platform.tenancy_is_owner(p_member, p_workspace) AND NOT platform.tenancy_is_owner(p_caller, p_workspace) THEN
+    IF platform.tenancy_holds_owner(p_member, p_workspace) AND NOT platform.tenancy_is_owner(p_caller, p_workspace) THEN
         RAISE EXCEPTION 'forbidden' USING ERRCODE = 'insufficient_privilege';
     END IF;
     -- The execution is recorded first: the caller may be removing itself.
@@ -519,6 +552,14 @@ BEGIN
     -- Installing never grants more than the admin holds.
     SELECT p INTO v_missing FROM jsonb_array_elements_text(coalesce(p_client -> 'permissions', '[]'::jsonb)) AS p
     WHERE NOT platform.direct_permission(p_caller, p) LIMIT 1;
+    -- A reinstall reuses the existing installation role: the admin must hold its permissions too.
+    IF v_missing IS NULL THEN
+        SELECT rp.permission INTO v_missing FROM platform.roles r
+        JOIN platform.role_permissions rp ON rp.workspace_id = r.workspace_id AND rp.role_id = r.id
+        WHERE r.workspace_id = p_workspace AND r.name = 'installation:' || (p_client ->> 'client_id')
+          AND NOT platform.direct_permission(p_caller, rp.permission)
+        LIMIT 1;
+    END IF;
     IF v_missing IS NOT NULL THEN
         RAISE EXCEPTION 'insufficient_privilege' USING ERRCODE = 'insufficient_privilege';
     END IF;
@@ -546,7 +587,7 @@ BEGIN
 END
 $$;
 GRANT EXECUTE ON FUNCTION
-    platform.tenancy_signup(text, text, text, text, text, text, integer, jsonb, jsonb),
+    platform.tenancy_signup(text, text[], text, text, text, text, integer, jsonb, jsonb),
     platform.tenancy_my_workspaces(text),
     platform.tenancy_invite(uuid, uuid, text, text, text, text, integer),
     platform.tenancy_list_invitations(uuid, uuid),
