@@ -37,6 +37,7 @@ def install(client_id: str, perms: list[str] | None = None) -> dict[str, Any]:
         "client_id": client_id,
         "display_name": client_id,
         "permissions": perms or ["decisions.decision:read"],
+        "products": ["finance"],
     }
 
 
@@ -461,6 +462,12 @@ def test_install_and_reinstall(cluster):
     assert call(cluster, "tenancy_installations", client["subject"], None, 10) == [ws]
     with pytest.raises(Code, match="forbidden"):
         call(cluster, "tenancy_install", member, ws, install("x"))
+
+
+def test_install_only_for_the_workspace_product(cluster):
+    t = signup(cluster)
+    with pytest.raises(Code, match="invalid_client"):
+        call(cluster, "tenancy_install", t["identity_id"], t["workspace_id"], {**install("crm-only"), "products": ["crm"]})
 
 
 def test_install_needs_template_permissions(cluster):

@@ -511,6 +511,11 @@ DECLARE
     v_created boolean;
 BEGIN
     PERFORM platform.tenancy_require(p_caller, p_workspace, 'identity.member:admin');
+    -- Only clients registered for this workspace's product (identity passes the registry's list).
+    IF NOT EXISTS (SELECT 1 FROM platform.workspaces w
+                   WHERE w.id = p_workspace AND coalesce(p_client -> 'products', '[]'::jsonb) ? w.product) THEN
+        RAISE EXCEPTION 'invalid_client' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
     -- Installing never grants more than the admin holds.
     SELECT p INTO v_missing FROM jsonb_array_elements_text(coalesce(p_client -> 'permissions', '[]'::jsonb)) AS p
     WHERE NOT platform.direct_permission(p_caller, p) LIMIT 1;
