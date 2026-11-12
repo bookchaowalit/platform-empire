@@ -28,6 +28,7 @@ ROLES = {
     "owner": OWNER_PERMS,
     "admin": [p for p in OWNER_PERMS if p != "identity.workspace:admin"],
     "member": ["decisions.decision:read", "decisions.decision:write"],
+    "billing": ["payments.intent:write"],  # a role holding more than the admin has
 }
 
 
@@ -70,11 +71,12 @@ def su(cluster, query: str, params: tuple = ()) -> list[tuple]:
 
 
 def signup(cluster, subject: str | None = None, product: str = "finance", slug: str | None = None,
-           installs: list[dict[str, Any]] | None = None, max_owned: int = 3) -> dict[str, Any]:
+           installs: list[dict[str, Any]] | None = None, max_owned: int = 3,
+           subject_hmacs: list[str] | None = None) -> dict[str, Any]:
     subject = subject or f"google-{uuid.uuid4().hex}"
     slug = slug or f"ws-{uuid.uuid4().hex[:10]}"
-    return call(cluster, "tenancy_signup", subject, f"h:{subject}", "Ann", product, slug, "Ann's books",
-                max_owned, ROLES, Jsonb(installs or []))
+    return call(cluster, "tenancy_signup", subject, subject_hmacs or [f"h:{subject}"], "Ann", product, slug,
+                "Ann's books", max_owned, ROLES, Jsonb(installs or []))
 
 
 def invite(cluster, caller, ws, email="ann@example.com", role="member", ttl=7 * 86400, code=None):
@@ -143,7 +145,7 @@ def test_signup_rows_and_atomicity(cluster):
     assert su(cluster, "SELECT owner_identity_id::text, status, product FROM platform.workspaces WHERE id = %s",
               (ws,)) == [(me, "active", "finance")]
     assert {r[0] for r in su(cluster, "SELECT name FROM platform.roles WHERE workspace_id = %s", (ws,))} == {
-        "owner", "admin", "member", "installation:communication-worker"}
+        "owner", "admin", "member", "billing", "installation:communication-worker"}
     assert roles_of(cluster, ws, me) == {"owner"}
     assert roles_of(cluster, ws, worker["subject"]) == {"installation:communication-worker"}
     assert su(cluster, "SELECT kind FROM platform.identities WHERE id = %s", (worker["subject"],)) == [
@@ -489,3 +491,50 @@ def test_expires_at_is_in_future(cluster):
     out, _ = invite(cluster, t["identity_id"], t["workspace_id"], ttl=3600)
     expires = datetime.fromisoformat(out["expires_at"])
     assert timedelta(minutes=59) < expires - datetime.now(UTC) <= timedelta(hours=1)
+
+
+# --- review fixes (code review 2026-11-12) ----------------------------------------------------------
+
+
+def test_admin_cannot_grant_a_role_beyond_its_own_permissions(cluster):
+    t, admin = _with_member(cluster, role="admin")
+    ws, owner = t["workspace_id"], t["identity_id"]
+    with pytest.raises(Code, match="insufficient_privilege"):
+        invite(cluster, admin, ws, role="billing")
+    with pytest.raises(Code, match="insufficient_privilege"):
+        call(cluster, "tenancy_set_member", admin, ws, admin, ["admin", "billing"], None)
+    # The owner may (owners administer every role of the workspace).
+    invite(cluster, owner, ws, role="billing")
+    call(cluster, "tenancy_set_member", owner, ws, admin, ["admin", "billing"], None)
+
+
+def test_suspended_owner_is_still_protected_from_admins(cluster):
+    t, second = _with_member(cluster, role="admin")
+    ws, first = t["workspace_id"], t["identity_id"]
+    call(cluster, "tenancy_set_member", first, ws, second, ["owner"], None)
+    call(cluster, "tenancy_set_member", first, ws, second, None, "suspended")
+    _, code = invite(cluster, first, ws, email="adm@example.com", role="admin")
+    accept(cluster, f"google-{uuid.uuid4().hex}", code, email="adm@example.com")
+    admin = su(cluster, "SELECT accepted_by FROM platform.invitations WHERE code_hmac = %s", (f"c:{code}",))[0][0]
+    for change in ((["admin"], None), (None, "active")):
+        with pytest.raises(Code, match="forbidden"):
+            call(cluster, "tenancy_set_member", str(admin), ws, second, *change)
+    with pytest.raises(Code, match="forbidden"):
+        call(cluster, "tenancy_remove_member", str(admin), ws, second)
+
+
+def test_signup_replay_survives_key_rotation(cluster):
+    subject = f"google-{uuid.uuid4().hex}"
+    first = signup(cluster, subject=subject, subject_hmacs=["old:" + subject])
+    again = signup(cluster, subject=subject, subject_hmacs=["new:" + subject, "old:" + subject])
+    assert again == {**first, "created": False}
+
+
+def test_reinstall_checks_the_existing_role(cluster):
+    t, admin = _with_member(cluster, role="admin")
+    ws, owner = t["workspace_id"], t["identity_id"]
+    wide = install("wide-client", ["identity.workspace:admin"])  # more than an admin holds
+    call(cluster, "tenancy_install", owner, ws, wide)
+    call(cluster, "tenancy_remove_member", owner, ws, wide["subject"])
+    with pytest.raises(Code, match="insufficient_privilege"):
+        call(cluster, "tenancy_install", admin, ws, {**wide, "permissions": ["decisions.decision:read"]})
