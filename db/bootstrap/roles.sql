@@ -13,6 +13,9 @@
 --                  across workspaces for the daily check; never task content.
 -- identity_api     platform-identity: platform.authorize and read-only
 --                  identity and membership columns; no writes.
+-- platform_tenancy NOLOGIN owner of the tenancy functions (migration 0009); no
+--                  BYPASSRLS. The migrator may SET ROLE to it (to hand the
+--                  functions over) but does not inherit its privileges.
 
 DO $$
 BEGIN
@@ -37,5 +40,9 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'identity_api') THEN
         CREATE ROLE identity_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT;
     END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'platform_tenancy') THEN
+        CREATE ROLE platform_tenancy NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT;
+    END IF;
 END
 $$;
+GRANT platform_tenancy TO empire_migrator WITH INHERIT FALSE, SET TRUE;
