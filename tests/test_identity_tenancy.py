@@ -556,3 +556,65 @@ def test_star_worker_needs_installation_and_lists_them(world):
     r = http.post("/v1/installations", headers=owner2, json={"client_id": "worker"})
     assert r.status_code == 201, r.text
     assert worker_token(other["workspace_id"]).status_code == 200
+
+
+# --- review fixes (2026-11-13) -------------------------------------------------------------------------
+
+
+def test_deletes_answer_204_without_a_body(world):
+    owner_sub, t = new_tenant(world)
+    ws, http = t["workspace_id"], world["http"]
+    invitation = http.post(
+        "/v1/invitations",
+        headers=admin(world, owner_sub, ws),
+        json={"email": "gone@example.com", "role": "member"},
+    ).json()["invitation_id"]
+    r = http.delete(
+        f"/v1/invitations/{invitation}", headers=admin(world, owner_sub, ws)
+    )
+    assert (r.status_code, r.content) == (204, b"")
+    assert r.headers["cache-control"] == "no-store"
+    join(world, owner_sub, ws)
+    member_id = next(
+        m["identity_id"]
+        for m in http.get("/v1/members", headers=admin(world, owner_sub, ws)).json()[
+            "members"
+        ]
+        if m["kind"] == "human" and m["roles"] == ["member"]
+    )
+    r = http.delete(f"/v1/members/{member_id}", headers=admin(world, owner_sub, ws))
+    assert (r.status_code, r.content) == (204, b"")
+
+
+def test_delegation_refuses_an_expired_subject_token_and_keeps_the_assertion(world):
+    owner_sub, t = new_tenant(world)
+    ws = t["workspace_id"]
+    live = person_token(
+        world, owner_sub, ws, audience="commerce-api", scope="decisions.decision:read"
+    ).json()["access_token"]
+    body = jwt.decode(live, options={"verify_signature": False})
+    now = int(time.time())
+    # Expired one second ago: still inside the verifier's leeway, so only an explicit check refuses it.
+    expired = SigningKey(world["signing"]).sign(
+        {**body, "iat": now - 120, "exp": now - 1}
+    )
+    one_assertion = assertion("commerce-api", world["commerce"][1])
+
+    def exchange(subject):
+        return world["http"].post(
+            "/v1/token",
+            data={
+                "grant_type": TOKEN_EXCHANGE,
+                "subject_token": subject,
+                "subject_token_type": ACCESS_TOKEN_TYPE,
+                "audience": "tasks-api",
+                "scope": "decisions.decision:read",
+                "client_assertion_type": ASSERTION_TYPE,
+                "client_assertion": one_assertion,
+            },
+        )
+
+    r = exchange(expired)
+    assert (r.status_code, r.json()["error"]) == (400, "invalid_grant")
+    # The refused request did not spend the client assertion.
+    assert exchange(live).status_code == 200
