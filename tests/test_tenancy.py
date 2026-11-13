@@ -786,6 +786,19 @@ def test_signup_replay_survives_key_rotation(cluster):
     assert again == {**first, "created": False}
 
 
+def test_signup_replay_survives_dropping_the_previous_key(cluster):
+    # Review P2: after the rotation window the old HMAC is gone; the identity still finds its workspace.
+    subject = f"google-{uuid.uuid4().hex}"
+    first = signup(cluster, subject=subject, subject_hmacs=["old:" + subject])
+    again = signup(
+        cluster,
+        subject=subject,
+        slug=f"ws-{uuid.uuid4().hex[:10]}",
+        subject_hmacs=["new:" + subject],
+    )
+    assert again == {**first, "created": False}
+
+
 def test_reinstall_checks_the_existing_role(cluster):
     t, admin = _with_member(cluster, role="admin")
     ws, owner = t["workspace_id"], t["identity_id"]
