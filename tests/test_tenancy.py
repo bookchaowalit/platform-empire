@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -837,3 +838,53 @@ def test_admin_cannot_manage_a_member_holding_more_than_it(cluster):
     call(
         cluster, "tenancy_set_member", owner, ws, billing, None, "suspended"
     )  # the owner may
+
+
+MIGRATIONS = Path(__file__).resolve().parents[1] / "services/platform/migrations"
+
+
+def _as_migrator(cluster, sql_text: str) -> None:
+    with cluster.connect("empire_migrator", "empire") as conn:
+        conn.execute(sql_text)
+        conn.commit()
+
+
+def test_signup_identity_backfill_reaches_rows_hidden_by_forced_rls(cluster):
+    # Review P2 (2026-11-13): 0010's backfill ran as the migrator under FORCE RLS and saw no rows.
+    t = signup(cluster)
+    ws = t["workspace_id"]
+    su(
+        cluster,
+        "UPDATE platform.signups SET identity_id = NULL WHERE workspace_id = %s",
+        (ws,),
+    )
+    _as_migrator(
+        cluster,
+        "UPDATE platform.signups s SET identity_id = w.owner_identity_id"
+        " FROM platform.workspaces w WHERE w.id = s.workspace_id AND s.identity_id IS NULL",
+    )
+    hidden = su(
+        cluster,
+        "SELECT identity_id FROM platform.signups WHERE workspace_id = %s",
+        (ws,),
+    )
+    assert hidden == [(None,)]  # the 0010 statement alone changes nothing
+    _as_migrator(
+        cluster,
+        (MIGRATIONS / "0011_signup_identity_backfill.sql").read_text(encoding="utf-8"),
+    )
+    filled = su(
+        cluster,
+        "SELECT identity_id::text FROM platform.signups WHERE workspace_id = %s",
+        (ws,),
+    )
+    assert filled == [(t["identity_id"],)]
+    forced = su(
+        cluster,
+        "SELECT relname, relforcerowsecurity FROM pg_class"
+        " WHERE oid IN ('platform.signups'::regclass, 'platform.workspaces'::regclass) ORDER BY 1",
+    )
+    assert forced == [
+        ("signups", True),
+        ("workspaces", True),
+    ]  # RLS is forced again afterwards
