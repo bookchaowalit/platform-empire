@@ -53,6 +53,9 @@ RUNTIME_ROLES = (
     "platform_monitor",
     "identity_api",
 )
+# Owner of the tenancy functions (migration 0009): no login, no BYPASSRLS. The
+# migrator may SET ROLE to it to hand the functions over, but does not inherit it.
+TENANCY_OWNER = "platform_tenancy"
 
 
 class NeonError(RuntimeError):
@@ -218,6 +221,23 @@ def ensure_runtime_roles(migrator_url: str, existing: dict[str, str]) -> dict[st
             )
         )
         conn.execute("REVOKE CREATE ON SCHEMA public FROM PUBLIC")
+        present = conn.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname = %s", (TENANCY_OWNER,)
+        ).fetchone()
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- DDL is composed with psycopg sql.SQL/sql.Identifier, which quote identifiers
+        conn.execute(
+            sql.SQL(
+                "{} ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT"
+            ).format(
+                sql.SQL("ALTER" if present else "CREATE"), sql.Identifier(TENANCY_OWNER)
+            )
+        )
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- DDL is composed with psycopg sql.SQL/sql.Identifier, which quote identifiers
+        conn.execute(
+            sql.SQL("GRANT {} TO {} WITH INHERIT FALSE, SET TRUE").format(
+                sql.Identifier(TENANCY_OWNER), sql.Identifier(MIGRATOR)
+            )
+        )
     return passwords
 
 
@@ -267,6 +287,15 @@ def verify(cluster: HostedCluster) -> list[str]:
         )[0]
         if owned:
             problems.append(f"runtime roles own {owned} tables")
+        tenancy = conn.execute(
+            "SELECT rolcanlogin, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb"
+            " FROM pg_roles WHERE rolname = %s",
+            (TENANCY_OWNER,),
+        ).fetchone()
+        if tenancy is None or any(tenancy):
+            problems.append(
+                f"{TENANCY_OWNER}: must be NOLOGIN without elevated attributes"
+            )
     for role in RUNTIME_ROLES:
         with cluster.connect(role) as conn:
             conn.execute("SELECT 1")

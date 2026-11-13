@@ -115,6 +115,29 @@ def test_runtime_roles_are_least_privilege_and_keep_their_passwords(cluster):
     assert neon.verify(HostedCluster(socket)) == []
 
 
+def test_tenancy_owner_role_is_nologin_and_settable_by_the_migrator(cluster):
+    """SPEC-006: platform_tenancy owns the tenancy functions; provision keeps it NOLOGIN without BYPASSRLS."""
+    owner = f"postgresql:///empire?host={cluster.socket_dir}&port=5432&user=postgres"
+    with cluster.connect("postgres", autocommit=True) as conn:
+        conn.execute("ALTER ROLE platform_tenancy LOGIN BYPASSRLS")  # drift that provision must undo
+    neon.ensure_runtime_roles(owner, {})
+    with cluster.connect("postgres", autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT r.rolcanlogin, r.rolbypassrls, r.rolsuper, m.inherit_option, m.set_option"
+            " FROM pg_roles r JOIN pg_auth_members m ON m.roleid = r.oid"
+            " JOIN pg_roles u ON u.oid = m.member AND u.rolname = 'empire_migrator'"
+            " WHERE r.rolname = 'platform_tenancy'").fetchone()
+        assert row == (False, False, False, False, True)
+        conn.execute("ALTER ROLE platform_tenancy BYPASSRLS")
+    socket = {role: f"postgresql:///empire?host={cluster.socket_dir}&port=5432&user={role}"
+              for role in (*neon.RUNTIME_ROLES, "empire_migrator")}
+    try:
+        assert "platform_tenancy: must be NOLOGIN without elevated attributes" in neon.verify(HostedCluster(socket))
+    finally:
+        with cluster.connect("postgres", autocommit=True) as conn:
+            conn.execute("ALTER ROLE platform_tenancy NOBYPASSRLS")
+
+
 def test_secrets_file_is_owner_only_and_parsed(tmp_path, monkeypatch):
     path = tmp_path / "cfg" / "db.env"
     neon.write_secrets(path, {"tasks_api": "postgresql://a?sslmode=require", "empire_migrator": "postgresql://b?sslmode=require"})
