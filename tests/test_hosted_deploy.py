@@ -183,6 +183,7 @@ def test_production_tokens(cluster, monkeypatch, tmp_path):
     assert cells.main(["grant", "--workspace", slug, "--cell", "liabilities"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "subscriptions"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "tax"]) == 0
+    assert cells.main(["grant", "--workspace", slug, "--cell", "general-ledger"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "accounts"]) == 0
     keys, tokens = tmp_path / "keys", tmp_path / "tokens"
     generate_keys(keys)

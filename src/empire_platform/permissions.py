@@ -382,6 +382,21 @@ FINANCE_OWNERS: dict[str, tuple[str, ...]] = {
         "tax.tax-item:write",
         "tax.tax-item:delete",
     ),
+    # Double-entry books (finance-general-ledger-api SPEC-001, 2026-11-12). Posted entries are immutable;
+    # closing or reopening a period needs period:approve.
+    "general-ledger": (
+        "general-ledger.account:read",
+        "general-ledger.account:write",
+        "general-ledger.account:delete",
+        "general-ledger.journal-entry:read",
+        "general-ledger.journal-entry:write",
+        "general-ledger.journal-entry:delete",
+        "general-ledger.journal-line:read",
+        "general-ledger.journal-line:write",
+        "general-ledger.journal-line:delete",
+        "general-ledger.period:read",
+        "general-ledger.period:approve",
+    ),
 }
 CELL_OWNERS.update(FINANCE_OWNERS)
 CELL_OWNERS["radar"] = RADAR_OWNER

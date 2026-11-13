@@ -57,6 +57,7 @@ DEFAULT_AUDIENCES = (
     "liabilities-api",
     "subscriptions-api",
     "tax-api",
+    "general-ledger-api",
     # Book Platform services (bookchaowalit-backend/platform-*), deployed 2026-10-29.
     "communication-api",
     "media-api",
