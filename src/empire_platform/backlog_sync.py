@@ -408,16 +408,31 @@ TASKS_API_BACKOFF = (2.0, 5.0)  # seconds before attempt 2 and 3
 TASKS_API_RETRY_BUDGET = 8
 RETRY_STATUS = frozenset({502, 503, 504})
 NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+# Wall-clock budget for the tasks-api phase of one run (monotonic). The cron is hourly; past the
+# deadline no new request starts, every remaining item fails fast and the run still reports its
+# heartbeat in time. A retry starts only if a full timeout still fits before the deadline.
+RUN_DEADLINE_SECONDS = 45 * 60
+REQUEST_TIMEOUT_SECONDS = 30
+
+
+class RunDeadline(httpx.TransportError):
+    """The run's time budget is spent: the request was never sent."""
 
 
 class TasksApi:
     """The two calls the sync needs; ``client`` carries the base URL and bearer token."""
 
     def __init__(
-        self, client: httpx.Client, sleep: Callable[[float], Any] = time.sleep
+        self,
+        client: httpx.Client,
+        sleep: Callable[[float], Any] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        budget: float = RUN_DEADLINE_SECONDS,
     ) -> None:
         self.client = client
         self.sleep = sleep
+        self.clock = clock
+        self.deadline = clock() + budget
         self.retries_left = TASKS_API_RETRY_BUDGET
 
     @staticmethod
@@ -427,18 +442,35 @@ class TasksApi:
     def _send(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         read = method == "GET"
         for attempt in range(TASKS_API_ATTEMPTS):
-            last = attempt == TASKS_API_ATTEMPTS - 1 or self.retries_left <= 0
+            if self.clock() >= self.deadline:
+                raise RunDeadline("run deadline reached")
+            backoff = TASKS_API_BACKOFF[min(attempt, len(TASKS_API_BACKOFF) - 1)]
             try:
                 response = self.client.request(method, url, **kwargs)
             except httpx.TransportError as exc:
-                if last or not (read or isinstance(exc, NOT_SENT)):
+                if not (
+                    self._may_retry(attempt, backoff)
+                    and (read or isinstance(exc, NOT_SENT))
+                ):
                     raise
             else:
-                if last or not read or response.status_code not in RETRY_STATUS:
+                if not (
+                    read
+                    and response.status_code in RETRY_STATUS
+                    and self._may_retry(attempt, backoff)
+                ):
                     return response
             self.retries_left -= 1
-            self.sleep(TASKS_API_BACKOFF[min(attempt, len(TASKS_API_BACKOFF) - 1)])
+            self.sleep(backoff)
         raise AssertionError("unreachable")  # pragma: no cover
+
+    def _may_retry(self, attempt: int, backoff: float) -> bool:
+        """Another attempt is left, the run budget has retries, and a full timeout still fits."""
+        return (
+            attempt < TASKS_API_ATTEMPTS - 1
+            and self.retries_left > 0
+            and self.clock() + backoff + REQUEST_TIMEOUT_SECONDS <= self.deadline
+        )
 
     def get(self, item: Item) -> dict[str, Any] | None:
         response = self._send("GET", self.path(item))
@@ -593,7 +625,7 @@ def _client(base: str, token: str, **headers: str) -> httpx.Client:
     return httpx.Client(
         base_url=base,
         headers={"Authorization": f"Bearer {token}", **headers},
-        timeout=30,
+        timeout=REQUEST_TIMEOUT_SECONDS,
         follow_redirects=False,  # never forward a token
     )
 
