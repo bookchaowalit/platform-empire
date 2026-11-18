@@ -413,3 +413,70 @@ def test_a_task_edited_after_the_read_is_not_overwritten(api, client):
     kept = tasks.get(item)
     assert kept is not None
     assert kept["title"] == "Owner's edit"
+
+
+# --- transient tasks-api failures (2026-11-18: RemoteProtocolError / ReadTimeout runs) ---
+
+
+def tasks_api(handler, sleeps: list[float] | None = None) -> sync.TasksApi:
+    http = httpx.Client(
+        base_url="http://tasks.test", transport=httpx.MockTransport(handler)
+    )
+    return sync.TasksApi(
+        http, sleep=(sleeps.append if sleeps is not None else lambda _s: None)
+    )
+
+
+ITEM = sync.Item("github", "o/r#1", {"title": "T", "status": "todo"})
+
+
+@pytest.mark.parametrize(
+    "error", [httpx.RemoteProtocolError, httpx.ReadTimeout, httpx.ConnectError]
+)
+def test_tasks_api_retries_a_transient_transport_error(error):
+    calls, sleeps = [], []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        if len(calls) == 1:
+            raise error("blip", request=request)
+        return httpx.Response(200, json={"number": 1})
+
+    assert tasks_api(handler, sleeps).get(ITEM) == {"number": 1}
+    assert len(calls) == 2
+    assert len(sleeps) == 1
+
+
+def test_tasks_api_retries_a_503_then_succeeds():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503) if len(calls) < 3 else httpx.Response(404)
+
+    assert tasks_api(handler).get(ITEM) is None
+    assert len(calls) == 3
+
+
+def test_tasks_api_gives_up_after_the_last_attempt():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        raise httpx.ReadTimeout("slow", request=request)
+
+    with pytest.raises(httpx.ReadTimeout):
+        tasks_api(handler).get(ITEM)
+    assert len(calls) == sync.TASKS_API_ATTEMPTS
+
+
+def test_tasks_api_never_retries_a_client_error():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(412)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        tasks_api(handler).put(ITEM, ITEM.body, version=3)
+    assert len(calls) == 1

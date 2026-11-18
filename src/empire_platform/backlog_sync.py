@@ -41,6 +41,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -393,18 +394,45 @@ def file_items(
 # --- tasks-api ------------------------------------------------------------------------
 
 
+# tasks-api sits on a scale-to-zero Neon compute: a cold wake or a recycled keep-alive
+# connection shows up as RemoteProtocolError / ReadTimeout (runs 2026-11-16 17:05,
+# 2026-11-18 01:05 and 14:05). Every call is retried; all three are safe to repeat: GET reads,
+# PUT is an upsert by external id (a repeated versioned PUT can only 412, never overwrite),
+# and archiving an archived task is a no-op.
+TASKS_API_ATTEMPTS = 3
+TASKS_API_BACKOFF = (2.0, 5.0)  # seconds before attempt 2 and 3
+RETRY_STATUS = frozenset({502, 503, 504})
+
+
 class TasksApi:
     """The two calls the sync needs; ``client`` carries the base URL and bearer token."""
 
-    def __init__(self, client: httpx.Client) -> None:
+    def __init__(
+        self, client: httpx.Client, sleep: Callable[[float], Any] = time.sleep
+    ) -> None:
         self.client = client
+        self.sleep = sleep
 
     @staticmethod
     def path(item: Item) -> str:
         return f"/v1/tasks/external/{item.source}/{urllib.parse.quote(item.external_id, safe='/')}"
 
+    def _send(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        for attempt in range(TASKS_API_ATTEMPTS):
+            last = attempt == TASKS_API_ATTEMPTS - 1
+            try:
+                response = self.client.request(method, url, **kwargs)
+            except httpx.TransportError:
+                if last:
+                    raise
+            else:
+                if response.status_code not in RETRY_STATUS or last:
+                    return response
+            self.sleep(TASKS_API_BACKOFF[min(attempt, len(TASKS_API_BACKOFF) - 1)])
+        raise AssertionError("unreachable")  # pragma: no cover
+
     def get(self, item: Item) -> dict[str, Any] | None:
-        response = self.client.get(self.path(item))
+        response = self._send("GET", self.path(item))
         if response.status_code == 404:
             return None
         response.raise_for_status()
@@ -415,13 +443,13 @@ class TasksApi:
     ) -> dict[str, Any]:
         """With ``version`` (from the read), a task edited since is not overwritten (412)."""
         headers = {"If-Match": f'"{version}"'} if version is not None else None
-        response = self.client.put(self.path(item), json=dict(body), headers=headers)
+        response = self._send("PUT", self.path(item), json=dict(body), headers=headers)
         response.raise_for_status()
         return response.json()
 
     def archive(self, task_id: str, reason: str) -> None:
-        self.client.post(
-            f"/v1/tasks/{task_id}/archive", json={"reason": reason}
+        self._send(
+            "POST", f"/v1/tasks/{task_id}/archive", json={"reason": reason}
         ).raise_for_status()
 
 
