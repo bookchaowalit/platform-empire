@@ -397,20 +397,20 @@ def file_items(
 # tasks-api sits on a scale-to-zero Neon compute: a cold wake or a recycled keep-alive
 # connection shows up as RemoteProtocolError / ReadTimeout (runs 2026-11-16 17:05,
 # 2026-11-18 01:05 and 14:05). Reads are retried on any transport error and on 502/503/504.
-# Writes are retried only when the request provably never left (no connection): a write whose
-# outcome is unknown is never repeated, because a repeat can overwrite create-only fields the
-# owner edited meanwhile, 412 against its own committed write, or add a second archive event.
-# The item then fails this run and the next hourly run reconciles it from a fresh read.
+# Writes are never retried: a repeated PUT is decided on a stale read (it can overwrite
+# create-only fields the owner set meanwhile, or 412 against its own committed write) and a
+# repeated archive adds a second event. A failed write fails that item for this run only; the
+# next hourly run reconciles it from a fresh read.
 TASKS_API_ATTEMPTS = 3
 TASKS_API_BACKOFF = (2.0, 5.0)  # seconds before attempt 2 and 3
 # Retries per run, so an API that is down cannot stretch a run past the hourly cron
 # (worst case adds 8 x (30 s timeout + backoff) to the run).
 TASKS_API_RETRY_BUDGET = 8
 RETRY_STATUS = frozenset({502, 503, 504})
-NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
-# Wall-clock budget for the tasks-api phase of one run (monotonic). The cron is hourly; past the
-# deadline no new request starts, every remaining item fails fast and the run still reports its
-# heartbeat in time. A retry starts only if a full timeout still fits before the deadline.
+# Wall-clock budget for one run, counted from the start of main() (monotonic), so source
+# collection counts too. The cron is hourly: past the deadline no new request starts, every
+# remaining item fails fast and the heartbeat still goes out with 15 min to spare. A request's
+# timeout never reaches past the deadline, and a retry starts only if a full timeout still fits.
 RUN_DEADLINE_SECONDS = 45 * 60
 REQUEST_TIMEOUT_SECONDS = 30
 
@@ -445,13 +445,12 @@ class TasksApi:
             if self.clock() >= self.deadline:
                 raise RunDeadline("run deadline reached")
             backoff = TASKS_API_BACKOFF[min(attempt, len(TASKS_API_BACKOFF) - 1)]
+            remaining = self.deadline - self.clock()
+            timeout = min(REQUEST_TIMEOUT_SECONDS, max(remaining, 1.0))
             try:
-                response = self.client.request(method, url, **kwargs)
-            except httpx.TransportError as exc:
-                if not (
-                    self._may_retry(attempt, backoff)
-                    and (read or isinstance(exc, NOT_SENT))
-                ):
+                response = self.client.request(method, url, timeout=timeout, **kwargs)
+            except httpx.TransportError:
+                if not (read and self._may_retry(attempt, backoff)):
                     raise
             else:
                 if not (
@@ -641,6 +640,7 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         "--sources", default=",".join(SOURCES), help="comma list of github,sentry,files"
     )
     args = parser.parse_args(argv)
+    started = time.monotonic()
     env = os.environ if env is None else env
     sources = [s for s in args.sources.split(",") if s]
     if not set(sources) <= set(SOURCES):
@@ -709,7 +709,12 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
             report,
             bot_repos,
         )
-        apply(items, TasksApi(tasks) if tasks else None, report, dry_run=args.dry_run)
+        api = None
+        if tasks:
+            api = TasksApi(
+                tasks, budget=RUN_DEADLINE_SECONDS - (time.monotonic() - started)
+            )
+        apply(items, api, report, dry_run=args.dry_run)
     finally:
         for client in (gh, sentry, tasks):
             if client is not None:
