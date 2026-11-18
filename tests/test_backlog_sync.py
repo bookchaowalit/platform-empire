@@ -480,3 +480,60 @@ def test_tasks_api_never_retries_a_client_error():
     with pytest.raises(httpx.HTTPStatusError):
         tasks_api(handler).put(ITEM, ITEM.body, version=3)
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("error", [httpx.RemoteProtocolError, httpx.ReadTimeout])
+def test_tasks_api_never_repeats_a_write_whose_outcome_is_unknown(error):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        raise error("lost", request=request)
+
+    api = tasks_api(handler)
+    with pytest.raises(error):
+        api.put(ITEM, ITEM.body)
+    with pytest.raises(error):
+        api.archive("t1", "closed")
+    assert calls == ["PUT", "POST"]
+
+
+def test_tasks_api_repeats_a_write_that_never_connected():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        if len(calls) == 1:
+            raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(200, json={"task": {"number": 1}})
+
+    assert tasks_api(handler).put(ITEM, ITEM.body) == {"task": {"number": 1}}
+    assert calls == ["PUT", "PUT"]
+
+
+def test_tasks_api_never_repeats_a_write_on_a_5xx():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        tasks_api(handler).put(ITEM, ITEM.body)
+    assert len(calls) == 1
+
+
+def test_tasks_api_stops_retrying_once_the_run_budget_is_spent():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        raise httpx.ReadTimeout("down", request=request)
+
+    api = tasks_api(handler)
+    for _ in range(10):
+        with pytest.raises(httpx.ReadTimeout):
+            api.get(ITEM)
+    # 10 reads, 8 retries in total: the run cannot stretch past the hourly cron.
+    assert len(calls) == 10 + sync.TASKS_API_RETRY_BUDGET
+    assert api.retries_left == 0
