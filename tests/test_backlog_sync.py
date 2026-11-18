@@ -537,3 +537,52 @@ def test_tasks_api_stops_retrying_once_the_run_budget_is_spent():
     # 10 reads, 8 retries in total: the run cannot stretch past the hourly cron.
     assert len(calls) == 10 + sync.TASKS_API_RETRY_BUDGET
     assert api.retries_left == 0
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_no_request_starts_after_the_run_deadline():
+    clock, calls = FakeClock(), []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        clock.now += 30  # every call times out after 30 s
+        raise httpx.ReadTimeout("slow", request=request)
+
+    http = httpx.Client(
+        base_url="http://tasks.test", transport=httpx.MockTransport(handler)
+    )
+    api = sync.TasksApi(http, sleep=lambda s: None, clock=clock, budget=100)
+    report = sync.Report()
+    items = [
+        sync.Item("github", f"o/r#{i}", {"title": "T", "status": "todo"})
+        for i in range(20)
+    ]
+    sync.apply(items, api, report, dry_run=False)
+    # 100 s of budget at 30 s per call: at most 4 calls, then the 20 items fail fast.
+    assert len(calls) <= 4
+    assert report.counts["errors"] == 20
+
+
+def test_a_retry_that_cannot_finish_before_the_deadline_is_not_started():
+    clock, calls = FakeClock(), []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        clock.now += 10
+        raise httpx.ReadTimeout("slow", request=request)
+
+    http = httpx.Client(
+        base_url="http://tasks.test", transport=httpx.MockTransport(handler)
+    )
+    api = sync.TasksApi(http, sleep=lambda s: None, clock=clock, budget=40)
+    with pytest.raises(httpx.ReadTimeout):
+        api.get(ITEM)
+    # after the first call (t=10) a retry needs 2 s backoff + 30 s timeout > 40 s left: none.
+    assert len(calls) == 1
