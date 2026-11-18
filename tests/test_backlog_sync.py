@@ -498,17 +498,33 @@ def test_tasks_api_never_repeats_a_write_whose_outcome_is_unknown(error):
     assert calls == ["PUT", "POST"]
 
 
-def test_tasks_api_repeats_a_write_that_never_connected():
+def test_tasks_api_never_repeats_a_write_even_if_it_never_connected():
     calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.method)
-        if len(calls) == 1:
-            raise httpx.ConnectError("refused", request=request)
-        return httpx.Response(200, json={"task": {"number": 1}})
+        raise httpx.ConnectError("refused", request=request)
 
-    assert tasks_api(handler).put(ITEM, ITEM.body) == {"task": {"number": 1}}
-    assert calls == ["PUT", "PUT"]
+    with pytest.raises(httpx.ConnectError):
+        tasks_api(handler).put(ITEM, ITEM.body)
+    assert calls == ["PUT"]
+
+
+def test_a_request_timeout_never_reaches_past_the_deadline():
+    clock, seen = FakeClock(), []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions["timeout"]["read"])
+        return httpx.Response(404)
+
+    http = httpx.Client(
+        base_url="http://tasks.test", transport=httpx.MockTransport(handler)
+    )
+    api = sync.TasksApi(http, sleep=lambda s: None, clock=clock, budget=12)
+    api.get(ITEM)
+    clock.now = 11.5
+    api.get(ITEM)
+    assert seen == [12, 1.0]
 
 
 def test_tasks_api_never_repeats_a_write_on_a_5xx():
