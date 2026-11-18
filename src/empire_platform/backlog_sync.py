@@ -396,12 +396,18 @@ def file_items(
 
 # tasks-api sits on a scale-to-zero Neon compute: a cold wake or a recycled keep-alive
 # connection shows up as RemoteProtocolError / ReadTimeout (runs 2026-11-16 17:05,
-# 2026-11-18 01:05 and 14:05). Every call is retried; all three are safe to repeat: GET reads,
-# PUT is an upsert by external id (a repeated versioned PUT can only 412, never overwrite),
-# and archiving an archived task is a no-op.
+# 2026-11-18 01:05 and 14:05). Reads are retried on any transport error and on 502/503/504.
+# Writes are retried only when the request provably never left (no connection): a write whose
+# outcome is unknown is never repeated, because a repeat can overwrite create-only fields the
+# owner edited meanwhile, 412 against its own committed write, or add a second archive event.
+# The item then fails this run and the next hourly run reconciles it from a fresh read.
 TASKS_API_ATTEMPTS = 3
 TASKS_API_BACKOFF = (2.0, 5.0)  # seconds before attempt 2 and 3
+# Retries per run, so an API that is down cannot stretch a run past the hourly cron
+# (worst case adds 8 x (30 s timeout + backoff) to the run).
+TASKS_API_RETRY_BUDGET = 8
 RETRY_STATUS = frozenset({502, 503, 504})
+NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 
 class TasksApi:
@@ -412,22 +418,25 @@ class TasksApi:
     ) -> None:
         self.client = client
         self.sleep = sleep
+        self.retries_left = TASKS_API_RETRY_BUDGET
 
     @staticmethod
     def path(item: Item) -> str:
         return f"/v1/tasks/external/{item.source}/{urllib.parse.quote(item.external_id, safe='/')}"
 
     def _send(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        read = method == "GET"
         for attempt in range(TASKS_API_ATTEMPTS):
-            last = attempt == TASKS_API_ATTEMPTS - 1
+            last = attempt == TASKS_API_ATTEMPTS - 1 or self.retries_left <= 0
             try:
                 response = self.client.request(method, url, **kwargs)
-            except httpx.TransportError:
-                if last:
+            except httpx.TransportError as exc:
+                if last or not (read or isinstance(exc, NOT_SENT)):
                     raise
             else:
-                if response.status_code not in RETRY_STATUS or last:
+                if last or not read or response.status_code not in RETRY_STATUS:
                     return response
+            self.retries_left -= 1
             self.sleep(TASKS_API_BACKOFF[min(attempt, len(TASKS_API_BACKOFF) - 1)])
         raise AssertionError("unreachable")  # pragma: no cover
 
