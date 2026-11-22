@@ -1574,7 +1574,7 @@ LANGUAGE sql STABLE AS $$
       AND graph.node_visible(h.other, p_actor, p_delegation)
       AND (h.edge_class <> 'restricted' OR EXISTS (
            SELECT 1 FROM graph.consents c
-           WHERE c.relation = h.relation AND c.subject_urn IN (h.from_urn, h.to_urn, h.other, s.urn)
+           WHERE c.relation = h.relation AND c.subject_urn IN (h.from_urn, h.to_urn)  -- stored endpoints only, as edge_visible
              AND c.revoked_at IS NULL AND c.expires_at > now()))
     ORDER BY h.relation, n.urn
     LIMIT least(greatest(p_limit, 1), 500)
