@@ -1,6 +1,6 @@
 # SPEC-002 — Catalog: shared domains, values and metric definitions
 
-Status: accepted (2026-11-22). Revised after four Codex review rounds; Q1–Q6 decided by Claude at the owner's
+Status: accepted (2026-11-22). Revised after five Codex review rounds; Q1–Q6 decided by Claude at the owner's
 request (see Decisions on open questions). The owner may reopen any of them before the implementation PR.
 
 ## Problem
@@ -96,6 +96,9 @@ revision that holds the full change. No change to the audit table.
   lock, and the retire sees the committed metric. A `PUT` that updates an existing metric must send `if_version`
   (the version it read); after the lock, a mismatch → 409 `version_conflict`, so a stale full-row `PUT` cannot write
   back a domain that a merge has just moved.
+- **Targets differ from the source:** after the lock, every target of merge, split and `metric_moves` must be a
+  different concept from the one being changed and still `active`; split needs at least two distinct targets.
+  So `merge A → A`, `split A into {A, B}` or moving a metric back to A → 422.
 - **Merge A into B:** B must be `active`. A gets `status = merged`, `replaced_by = {B}`, and a
   `graph.aliases` row A → B. In the same transaction every existing alias whose target is A is repointed to B,
   so aliases are always one hop and `graph.resolve()` (single lookup) stays correct after chained merges
@@ -157,13 +160,18 @@ the subject's `.created` at the same version cannot make that lifecycle event `s
 lifecycle events. Other relations keep the existing single `linked` / `unlinked` events.
 Ingest changes, in `graph.ingest_event_v1` and the unlink path:
 
+0. **Taxonomy consistency:** ingest of a catalog set event takes the workspace taxonomy lock of D3 in **shared**
+   mode (`pg_advisory_xact_lock_shared`) before resolving, and taxonomy writes take it exclusive, so resolve, status
+   check and edge writes all see one taxonomy state; a merge or split committing mid-ingest cannot be half-seen.
 1. **Canonicalise** each short-form target (D1) using the event's `workspace_id`, then `graph.resolve()`.
 2. **Target check**, only for the four catalog relations above (targets `platform:domain`, `platform:value`,
    `platform:metric`; `assigned-to` → `platform:identity` and every other relation are unchanged): after resolve,
    the target must be a row in `graph.concepts` / `graph.metric_definitions` of this workspace with the right kind.
    - not found (typo, other workspace) → `rejected_relation`;
    - a `platform:metric` target whose classification is `confidential` or `restricted` is linkable only when the
-     publishing principal (the delegation's grantor, live permissions) holds the register's `read_permission`;
+     publishing token's **effective** permissions hold the register's `read_permission`: it must be in the token's
+     scopes *and* held live by the delegation's grantor (publisher tokens normally carry only `graph.<cell>:write`,
+     so they cannot link protected metrics);
      otherwise the outcome is the same `rejected_relation` as not found, so ingest results do not reveal hidden
      definitions;
    - `active` → stored;
@@ -174,8 +182,10 @@ Ingest changes, in `graph.ingest_event_v1` and the unlink path:
    A merged concept has already resolved to its active target.
 3. **Replace in one transaction, ordered by `set_version`.** `graph.edge_versions (workspace_id, from_urn,
    relation, asserted_by, version)` holds the highest `set_version` applied for that set. Ingest first takes
-   `pg_advisory_xact_lock` on a hash of (workspace, subject, relation, asserting cell) (this works when neither the
-   node nor the `edge_versions` row exists yet), then reads `edge_versions`. A set event with a version not higher
+   `pg_advisory_xact_lock` on a hash of (workspace, subject) (this works when neither the node nor the
+   `edge_versions` row exists yet), then reads `edge_versions`. A subject's `.deleted` event takes the **same** lock
+   before it retracts edges and writes its tombstone versions, so a set event and a delete for a subject that has no
+   node yet cannot interleave. A set event with a version not higher
    than the stored one is recorded `stale` and changes nothing. A set event for a subject whose node is
    `lifecycle = 'deleted'` is also `stale`: the delete already retracted its edges, and `.deleted` writes the deleted
    version into `edge_versions` for every catalog relation of that subject in the same transaction, so a set event
@@ -214,7 +224,7 @@ Ingest changes, in `graph.ingest_event_v1` and the unlink path:
 | `target` | jsonb null | `{"window": "7d", "op": ">=", "value": 7}`; null is allowed (a KPI need not have a target) |
 | `classification` | text | the source's classification from `graph.metric_sources` (below); a writer may raise it, never lower it |
 | `status` | text | `active` \| `retired` (+ `replaced_by` text null) |
-| `version` | int | bumps on any change to scale, aggregation, source, domain, criteria or target |
+| `version` | int | bumps on any change other than `label` and `description` (scale, unit, value_range, kind, objectivity, source, aggregation, cadence, criteria, target, classification, domain, status); it is also the `if_version` token for writes |
 
 ### D7. Validation the catalog enforces
 
@@ -223,7 +233,9 @@ Ingest changes, in `graph.ingest_event_v1` and the unlink path:
   `last` needs `source.time_field` (the field the latest observation is chosen by).
 - `criteria` / `target` comparisons (`<`, `>=`…) are refused for nominal metrics.
 - Thresholds are checked against the range of the **aggregate**, not the raw value:
-  for `mean`, `median`, `min`, `max`, `last`, `mode` the aggregate range is `value_range`;
+  first the **per-period range** after `dedupe.combine`: `last` or `max` keep `value_range`; `sum` keeps the lower
+  bound 0 when `value_range.min ≥ 0` and has no upper bound; with no `dedupe`, it is `value_range`. Then
+  for `mean`, `median`, `min`, `max`, `last`, `mode` the aggregate range is that per-period range;
   for `sum` and `count` the number of observations in a window is not known from the definition, so only the sign
   is guaranteed: `sum` is `[0, unbounded)` when `value_range.min ≥ 0`, otherwise unbounded; `count` is `[0, unbounded)`.
   So a weekly water target of 14 L passes with `value_range.max = 10` per observation, and a `sum` threshold of 40
@@ -234,6 +246,13 @@ Ingest changes, in `graph.ingest_event_v1` and the unlink path:
   `diary.journal-entry:read`) and `time/time-logs` (`internal`, `time.time-log:read`). `PUT` refuses a source not in
   it, copies `read_permission` from it (a writer cannot supply or replace it), and refuses a `classification` lower
   than the register's. The catalog does not read the cell, it only stores the pointer.
+- `dedupe.by = day` needs `dedupe.tz` (an IANA zone, `Asia/Bangkok` for the seeds): a day is the local date of
+  `time_field` in that zone, and 7-day windows use the same zone. The check-in and Apple Health write Bangkok-day
+  times, so grouping by UTC would split one Bangkok day.
+- Writing a metric needs, besides `catalog.metric-definition:write`, the register's `read_permission` of its source
+  (a writer must be able to read what it defines), and the key's prefix must equal `source.cell` (`diary.*` only for
+  diary sources). Without the read permission, `PUT` returns 404 whether or not the key exists, before any
+  `if_version` check, so writes cannot reveal hidden keys.
 - `dedupe` is required when the `source.filter` can match more than one writer of the same value (the check-in
   and Apple Health both write `sleep_hours`, `exercise_minutes` and `weight` to `health-metrics`).
 - Every write is audited per D2 (hash audit + full revision row).
@@ -305,7 +324,11 @@ Concepts are addressed by `{kind}/{slug}` (domain and value may share a slug):
 | `GET /v1/catalog/versions` | `catalog.concept:read` |
 
 Concept and metric reads show merged URNs as their target with `was` listing the old URNs.
-MCP: `catalog.concepts`, `catalog.metrics`, `catalog.review` (read only).
+MCP: `catalog.concepts`, `catalog.metrics`, `catalog.review` (read only), on both adapters in this repository:
+the local stdio `empire-mcp` and the hosted owner MCP. The hosted one only accepts tokens whose scopes are inside
+`MCP_SCOPES` (`src/empire_platform/token_exchange.py`) and the deployed `owner-mcp` token gets its scopes from
+`contracts/automations/v1/automations.json`; both lists gain `catalog.concept:read` and
+`catalog.metric-definition:read` (read scopes only, no write or admin).
 
 **OpenAPI:** today `empire-contracts --check` builds the schema from `create_app()` only, while platform routes are
 added later in `main()`, so platform routes are not in the contract. Catalog routes are registered by one function
@@ -357,9 +380,9 @@ Criteria and targets are accepted as below (Q3); `warn` only notifies and change
 
 | key | source (cell / resource / field, filter, time field) | scale / unit, value_range | kind | aggregation | criteria / target |
 |---|---|---|---|---|---|
-| `health.sleep_hours` | health / `health-metrics` / `value`, `metric_type = sleep_hours`, `recorded_at`, dedupe by day prefer `apple-health` then `telegram-checkin`, combine `last` | ratio h, 0–24 | leading | mean 7d | warn mean 7d < 6; target ≥ 7 |
-| `health.weight_kg` | health / `health-metrics` / `value`, `metric_type = weight`, `recorded_at`, dedupe by day prefer `apple-health` then `telegram-checkin`, combine `last` | ratio kg, 20–300 | lagging | last | none |
-| `health.exercise_minutes` | health / `health-metrics` / `value`, `metric_type = exercise_minutes`, `recorded_at`, dedupe by day prefer `apple-health` (one daily-total row) then `telegram-checkin`, combine `sum` | ratio min, ≥ 0 | leading | sum 7d | target ≥ 150 / week |
+| `health.sleep_hours` | health / `health-metrics` / `value`, `metric_type = sleep_hours`, `recorded_at`, dedupe by Bangkok day prefer `apple-health` then `telegram-checkin`, combine `last` | ratio h, 0–24 | leading | mean 7d | warn mean 7d < 6; target ≥ 7 |
+| `health.weight_kg` | health / `health-metrics` / `value`, `metric_type = weight`, `recorded_at`, dedupe by Bangkok day prefer `apple-health` then `telegram-checkin`, combine `last` | ratio kg, 20–300 | lagging | last | none |
+| `health.exercise_minutes` | health / `health-metrics` / `value`, `metric_type = exercise_minutes`, `recorded_at`, dedupe by Bangkok day prefer `apple-health` (one daily-total row) then `telegram-checkin`, combine `sum` | ratio min, ≥ 0 | leading | sum 7d | target ≥ 150 / week |
 | `health.water_litres` | health / `health-metrics` / `value`, `metric_type = water`, `recorded_at` | ratio L, 0–10 | leading | mean 7d | target ≥ 2 |
 | `diary.mood` | diary / `journal-entries` / `mood`, `entry_type = daily`, `entry_date` | ordinal 1–5 | lagging | median 7d | warn median 7d ≤ 2 |
 | `diary.energy` | diary / `journal-entries` / `energy_level`, `entry_type = daily`, `entry_date` | ordinal 1–5 | guardrail | median 7d | warn median 7d < 3 → plan rest |
@@ -392,7 +415,9 @@ goals `tech → skills`, `business → work`, `life → unclassified`, `creative
        service, variable `TIME_PUBLISHER_TOKEN`), so `token-rotate` renews the token on both before it expires;
      - in `life-time-api`: `TIME_PUBLISHER_TOKEN` and `EMPIRE_PLATFORM_URL` on **both** `time-api` (inline publish) and
        the outbox sweep cron service in `.railway/railway.ts` (`time-publish` exits when either is missing), which
-       re-sends rows whose inline publish failed.
+       re-sends rows whose inline publish failed. The cron also needs `TIME_DB_MODE=hosted` and
+       `TIME_DB_URL_PUBLISHER` (the `time_publisher` role's connection, not the API's), because `time-publish` reads
+       the hosted outbox as that role.
      The publisher (`src/cellkit/publisher.py`) sends only the outbox rows of its token's workspace, so one token
      covers one workspace. This rollout enables the owner's workspace only; rows of other workspaces stay in that
      cell's outbox until each gets its own token (a later change, per-workspace tokens). Minting the token is an
@@ -424,7 +449,7 @@ goals `tech → skills`, `business → work`, `life → unclassified`, `creative
 - AC-14 `serves-value` from `tasks:task` → `rejected_relation` (type not allowed by D5).
 - AC-15 `PUT` metric with `scale = ordinal`, `aggregation = mean` → 422; with `median` → 200; `last` without `source.time_field` → 422; every seeded metric passes `PUT` unchanged.
 - AC-16 nominal metric with `<` criterion → 422; ratio metric with `value_range.max = 10`, `sum` 7d and target ≥ 14 → 200; `mean` with target 14 → 422.
-- AC-17 metric change to criteria bumps its `version`; label-only change does not.
+- AC-17 metric change to criteria, unit, cadence or value_range bumps its `version`; label-only change does not; a full-row `PUT` with an old `if_version` after a value_range change → 409.
 - AC-18 caller with `catalog.concept:read` but without read permission on the source cell type sees neither labels nor counts of those entities in `/v1/catalog/review` or version snapshots; restricted edges without consent are excluded.
 - AC-19 version bump writes `unclassified_snapshot` with counts by cell/type only (no labels, no URNs).
 - AC-20 caller without `catalog.concept:admin` gets 403 on merge/split/retire; `tasks_api` has no direct table privilege on catalog tables (only `EXECUTE` on `graph.catalog_*`).
@@ -442,7 +467,7 @@ goals `tech → skills`, `business → work`, `life → unclassified`, `creative
 - AC-32 after `work` is split, a goal created with category `business` gets an `in-domain` edge to `unclassified` with `provenance.requested` = the `work` URN, and `/v1/catalog/review` lists it under `work`.
 - AC-33 snapshot with a `restricted` edge in `unclassified`: the edge is not counted; the response has `restricted_excluded: true`.
 - AC-34 a caller with `catalog.metric-definition:read` but without `diary.journal-entry:read` gets 404 from `GET /v1/catalog/metrics/diary.energy` and does not see it in lists; a caller with both gets 200; the lake export contains no `confidential`/`restricted` definition.
-- AC-35 using the `dedupe` read back from `GET /v1/catalog/metrics/health.exercise_minutes`: a day with both an Apple Health and check-in rows counts only the Apple Health value in `sum 7d`; a day with only check-in rows sums them; for `health.sleep_hours` a day with two check-in rows uses the last one.
+- AC-35 using the `dedupe` read back from `GET /v1/catalog/metrics/health.exercise_minutes`: a day with both an Apple Health and check-in rows counts only the Apple Health value in `sum 7d`; a day with only check-in rows sums them; for `health.sleep_hours` a day with two check-in rows uses the last one; a check-in at 06:00 and an Apple Health row at 23:59 on the same Bangkok day (different UTC days) count as one day.
 - AC-36 a time log created through the time cell API while the platform is unreachable reaches the graph after the outbox sweep runs (AC-22 on retry).
 - AC-37 after split of `work` (item fell back to `unclassified` with `requested = work`), a set event moving the goal to `skills` retracts the fallback edge; an item the cell set to `unclassified` directly keeps its edge.
 - AC-38 `PUT` with a source not in `graph.metric_sources` → 422; `diary.energy` with `classification = internal` → 422; a supplied `read_permission` is ignored and the register's is stored.
@@ -450,11 +475,16 @@ goals `tech → skills`, `business → work`, `life → unclassified`, `creative
 - AC-40 on a workspace that existed before rollout: after `empire-cells grant --cell time`, `platform-empire` issues a `time-publisher` token with `graph.time:write` (without the grant the delegation is refused); `deployments.json` lists both time targets.
 - AC-41 set event for a goal arrives before its `.created` at the same version → edge stored, then `.created` still sets the node label (not `stale`); backfill of a time log with no prior events creates its node.
 - AC-42 two first set events (v1, v2) for the same subject delivered concurrently → only v2's set remains.
-- AC-43 `.deleted` processed before an older pending set event → the set event is `stale`; no live edge on the deleted node.
+- AC-43 `.deleted` processed before an older pending set event → the set event is `stale`; no live edge on the deleted node; `.deleted` and a set event started concurrently for a subject with no node yet → no live edge after both commit.
 - AC-44 a full-row `PUT` with the old `if_version` after a merge moved the metric → 409 `version_conflict`; label-only `PUT` with current `if_version` keeps the moved domain.
 - AC-45 token with `catalog.concept:admin` but without `diary.journal-entry:read` in its scopes (actor has it): split 409 hides `diary.energy` in `hidden_dependencies`, and `metric_moves` naming it is refused.
 - AC-46 metric on `time/time-logs` raised to `restricted`: a caller with only `catalog.metric-definition:read` gets 404; it is not in the lake export.
-- AC-47 a publisher without `diary.journal-entry:read` linking `measured-by` to `diary.energy` gets the same `rejected_relation` as for a missing key.
+- AC-47 a publisher without `diary.journal-entry:read` linking `measured-by` to `diary.energy` gets the same `rejected_relation` as for a missing key, including when the grantor holds the permission but the token's scopes do not.
+- AC-48 a set event published while `merge A → B` commits sees either the pre-merge or the post-merge taxonomy, never A resolved but `merged`; same for split.
+- AC-49 `merge A → A`, `split A into {A, B}`, `split A into {B}` and `metric_moves` back to A → 422.
+- AC-50 ratio metric with `value_range.max = 10`, `dedupe.combine = sum`, `mean 7d`, target ≥ 14 → 200; with `combine = last` → 422.
+- AC-51 a writer without `diary.journal-entry:read` gets the same 404 from `PUT /v1/catalog/metrics/diary.energy` (exists) and `PUT /v1/catalog/metrics/diary.unknown` (does not); `PUT` of key `diary.x` with a `time` source → 422.
+- AC-52 catalog reads through the hosted owner MCP with the deployed `owner-mcp` token return the owner's concepts; a catalog write through MCP is refused.
 
 ## Decisions on open questions (2026-11-22)
 
