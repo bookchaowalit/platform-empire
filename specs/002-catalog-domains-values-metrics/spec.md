@@ -1,7 +1,7 @@
 # SPEC-002 — Catalog: shared domains, values and metric definitions
 
-Status: proposed (2026-11-22, revised after three Codex review rounds the same day). Owner decision needed on the open
-questions below before build.
+Status: accepted (2026-11-22). Revised after three Codex review rounds; Q1–Q6 decided by Claude at the owner's
+request (see Decisions on open questions). The owner may reopen any of them before the implementation PR.
 
 ## Problem
 
@@ -319,20 +319,31 @@ Domains (owner may rename before build; slugs are the stable part):
 | `meaning` | ความหมายและการเติบโต |
 | `unclassified` | ยังไม่จัดหมวด |
 
-Values: none seeded; the owner writes them (open question Q2).
+Values (Q2), edited freely by the owner later; slugs avoid the domain slugs to keep `serves-value` readable:
+
+| slug | label |
+|---|---|
+| `freedom` | อิสรภาพ |
+| `security` | ความมั่นคง |
+| `vitality` | สุขภาพดีและมีพลัง |
+| `love` | ความรักและความสัมพันธ์ที่ดี |
+| `growth` | การเติบโต |
+| `beauty` | ความงามและสุนทรียะ |
+
+No `serves-value` edges are seeded; goals get them when the owner links them.
 
 Metrics, from what the evening check-in writes today (`life-checkin-worker/src/worker.ts`, `parse.ts`).
-Criteria and targets marked **(proposed)** need owner OK:
+Criteria and targets are accepted as below (Q3); `warn` only notifies and changes nothing automatically:
 
 | key | source (cell / resource / field, filter, time field) | scale / unit, value_range | kind | aggregation | criteria / target |
 |---|---|---|---|---|---|
-| `health.sleep_hours` | health / `health-metrics` / `value`, `metric_type = sleep_hours`, `recorded_at`, dedupe by day prefer `apple-health` then `telegram-checkin` | ratio h, 0–24 | leading | mean 7d | warn mean 7d < 6; target ≥ 7 (proposed) |
+| `health.sleep_hours` | health / `health-metrics` / `value`, `metric_type = sleep_hours`, `recorded_at`, dedupe by day prefer `apple-health` then `telegram-checkin` | ratio h, 0–24 | leading | mean 7d | warn mean 7d < 6; target ≥ 7 |
 | `health.weight_kg` | health / `health-metrics` / `value`, `metric_type = weight`, `recorded_at`, dedupe by day prefer `apple-health` then `telegram-checkin` | ratio kg, 20–300 | lagging | last | none |
-| `health.exercise_minutes` | health / `health-metrics` / `value`, `metric_type = exercise_minutes`, `recorded_at`, dedupe by day prefer `apple-health` (daily total) then sum of `telegram-checkin` rows | ratio min, ≥ 0 | leading | sum 7d | target ≥ 150 / week (proposed) |
-| `health.water_litres` | health / `health-metrics` / `value`, `metric_type = water`, `recorded_at` | ratio L, 0–10 | leading | mean 7d | target ≥ 2 (proposed) |
-| `diary.mood` | diary / `journal-entries` / `mood`, `entry_type = daily`, `entry_date` | ordinal 1–5 | lagging | median 7d | warn median 7d ≤ 2 (proposed) |
-| `diary.energy` | diary / `journal-entries` / `energy_level`, `entry_type = daily`, `entry_date` | ordinal 1–5 | guardrail | median 7d | warn median 7d < 3 → plan rest (proposed) |
-| `time.work_minutes` | time / `time-logs` / `minutes`, `domain = work`, `log_date` | ratio min, ≥ 0 | guardrail | sum 7d | warn > 3,600 / week (60 h) (proposed) |
+| `health.exercise_minutes` | health / `health-metrics` / `value`, `metric_type = exercise_minutes`, `recorded_at`, dedupe by day prefer `apple-health` (daily total) then sum of `telegram-checkin` rows | ratio min, ≥ 0 | leading | sum 7d | target ≥ 150 / week |
+| `health.water_litres` | health / `health-metrics` / `value`, `metric_type = water`, `recorded_at` | ratio L, 0–10 | leading | mean 7d | target ≥ 2 |
+| `diary.mood` | diary / `journal-entries` / `mood`, `entry_type = daily`, `entry_date` | ordinal 1–5 | lagging | median 7d | warn median 7d ≤ 2 |
+| `diary.energy` | diary / `journal-entries` / `energy_level`, `entry_type = daily`, `entry_date` | ordinal 1–5 | guardrail | median 7d | warn median 7d < 3 → plan rest |
+| `time.work_minutes` | time / `time-logs` / `minutes`, `domain = work`, `log_date` | ratio min, ≥ 0 | guardrail | sum 7d | warn > 3,600 / week (60 h) |
 | `time.learning_minutes` | time / `time-logs` / `minutes`, `domain = learning`, `log_date` | ratio min, ≥ 0 | leading | sum 7d | none until owner sets one |
 
 Category mapping (cells emit `in-domain` edges; the goals enum stays until a later goals spec):
@@ -412,12 +423,21 @@ goals `tech → skills`, `business → work`, `life → unclassified`, `creative
 - AC-39 a token whose scopes lack `catalog.concept:read` gets 404 on `GET /v1/catalog/concepts` even though the actor has the permission; a token with `catalog.metric-definition:read` but not `diary.journal-entry:read` in its scopes does not see `diary.energy`; review omits cell types outside the token's scopes.
 - AC-40 `platform-empire` issues a `time-publisher` token with `graph.time:write` for the owner's workspace (automation contract + owner grant).
 
-## Open questions (owner)
+## Decisions on open questions (2026-11-22)
 
-- Q1 Domain labels and the 8-domain seed: keep, rename or change before build?
-- Q2 Values: which values to seed (e.g. อิสรภาพ, สุขภาพ, ความรัก, การเติบโต, ความงาม)?
-- Q3 Proposed criteria and targets in the metric seed: accept, change or leave empty?
-- Q4 Relationship data (people) has no cell yet; domain `relationships` will stay empty until one exists. Build a relationships cell (restricted), or keep it in diary text?
-- Q5 Deploy the graph read API (tech-debt item) now, or keep catalog reads on `tasks-api` only?
-- Q6 Operating KPIs (D7a): link by `defined-by` as proposed, or move all cross-cell KPI definitions into the catalog
-  and keep only measurements in the operating cell?
+- **Q1 Domains:** keep the 8 domains and `unclassified` with the labels above. They cover every item in the
+  owner's original list (money, skills, experience, love and charm, goals as a level not a domain, aesthetics,
+  chill, tiredness as a health state). Changing them later is cheap by design (D3), so there is no reason to wait.
+- **Q2 Values:** seed the six values above. They are the values the earlier discussion kept returning to
+  (freedom, security, health, love, growth, beauty); the owner renames or adds through the API.
+- **Q3 Criteria and targets:** accept the seed. Exercise 150 min/week follows the WHO adult guideline; sleep ≥ 7 h
+  follows common adult sleep guidance; the rest are starting points. All thresholds are `warn` (notify only), and
+  ordinal scores use medians, so a wrong threshold costs a notification, not a decision.
+- **Q4 Relationships:** no relationships cell now. Data about other people is the most sensitive data in the
+  system, there is no source that writes it today, and a cell would need its own privacy design. Relationship notes
+  stay in diary text; the `relationships` domain exists and stays empty until a later spec builds a restricted cell.
+- **Q5 Graph read API:** do not deploy it in this work. Catalog reads go through `tasks-api` routes, which are
+  already deployed behind the gateway; the graph read API becomes worth a service only when an app needs
+  neighbour queries. It stays a tech-debt item.
+- **Q6 Operating KPIs:** link with `defined-by` as in D7a. It needs no change to the operating cell's data model,
+  keeps measurements where they are, and still gives one source of truth for cross-cell definitions.
