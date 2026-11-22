@@ -1039,6 +1039,8 @@
         "business-assets.asset:write",
         "cash-flow.cashflow-plan:read",
         "cash-flow.cashflow-plan:write",
+        "catalog.concept:read",
+        "catalog.metric-definition:read",
         "content.campaign:read",
         "content.campaign:write",
         "content.content-calendar:read",

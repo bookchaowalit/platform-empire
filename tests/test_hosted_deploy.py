@@ -171,6 +171,8 @@ def test_production_tokens(cluster, monkeypatch, tmp_path):
     assert cells.main(["grant", "--workspace", slug, "--cell", "opportunities"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "health"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "time"]) == 0
+    # SPEC-002: migration 2006 grants these to owners that existed before it; this workspace is newer.
+    assert cells.main(["grant", "--workspace", slug, "--cell", "catalog"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "radar"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "offers"]) == 0
     assert cells.main(["grant", "--workspace", slug, "--cell", "finance-accounts"]) == 0

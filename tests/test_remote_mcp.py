@@ -295,6 +295,9 @@ def test_mapped_subject_lists_and_creates_with_attribution(
         "tasks.update",
         "tasks.complete",
         "tasks.link",
+        "catalog.concepts",
+        "catalog.metrics",
+        "catalog.review",
     }
 
     created = tool(client, token, "tasks.create", {"title": "From Claude"})

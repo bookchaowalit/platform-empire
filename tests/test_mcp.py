@@ -56,6 +56,9 @@ def test_tools_take_no_identity_arguments(apps, gworld, gtoken):
         "tasks.update",
         "tasks.complete",
         "tasks.link",
+        "catalog.concepts",
+        "catalog.metrics",
+        "catalog.review",
         "graph.search",
         "graph.neighbors",
     }

@@ -89,9 +89,10 @@ ledger rows `cash_reconciled`. It runs daily as the `stripe-reconciler` automati
 | `packages/authz/` | Python client (`authorize`, `enforce`) for the decision point |
 | `services/tasks/migrations/` | `tasks` schema with forced RLS, URN links, and the transactional outbox |
 | `services/tasks/tasks_api/` | Tasks API (`tasks.v1`); contract in `contracts/tasks/v1/` |
+| `services/tasks/tasks_api/catalog.py`, `services/graph/migrations/2006_catalog.sql` | SPEC-002 catalog: `/v1/catalog/*` routes for shared life domains, values and metric definitions, served by `graph.catalog_*` SECURITY DEFINER functions; part of the `tasks.v1` contract |
 | `services/tasks/tasks_api/publisher.py` | outbox publisher (`tasks_publisher` role): oldest first, retry with backoff, at least once |
 | `services/graph/` | graph schema (nodes, aliases, edges, relation types, consents, inbox), event consumer, and the read API |
-| `services/mcp/empire_mcp/` | MCP tools `tasks.*` and `graph.*` that call the APIs with the caller's token and reject unknown arguments; `hosted.py` serves them over Streamable HTTP behind Clerk OAuth with a subject allowlist (`docs/runbooks/remote-mcp.md`) |
+| `services/mcp/empire_mcp/` | MCP tools `tasks.*`, `catalog.*` (read only) and `graph.*` that call the APIs with the caller's token and reject unknown arguments; `hosted.py` serves them over Streamable HTTP behind Clerk OAuth with a subject allowlist (`docs/runbooks/remote-mcp.md`) |
 | `docs/runbooks/recovery.md`, `tests/test_recovery_rehearsal.py` | isolated PostgreSQL recovery, synthetic dump/restore acceptance and hosted recovery gates |
 | `docs/runbooks/tasks-cutover-and-rollback.md` | historical SQLite cutover/retirement and runtime configuration guidance |
 | `tests/` | isolation, RLS bypass, delegation, authorization conformance and TOCTOU, API, contract, writer parity, graph, MCP and recovery tests |

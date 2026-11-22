@@ -96,6 +96,9 @@ MCP_SCOPES = (
     "tasks.task:write",
     "tasks.status:write",
     "tasks.link:write",
+    # SPEC-002 catalog reads (no catalog write or admin through MCP)
+    "catalog.concept:read",
+    "catalog.metric-definition:read",
 )
 MCP_AUDIENCE_SCOPES = {"tasks-api": MCP_SCOPES, "graph-api": ("graph.query:read",)}
 
