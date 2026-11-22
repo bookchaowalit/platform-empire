@@ -1528,18 +1528,56 @@ AS $$
     SELECT graph.ingest_cell_event(p_event, p_cell, NULL::jsonb)
 $$;
 
--- Graph reads (neighbors, search, edge visibility) apply D7b to catalog metric nodes as well: a protected
--- definition is visible only with its source's read permission, the same rule as the catalog routes.
+-- Graph reads (neighbors, search, edge visibility) apply the catalog rules to platform catalog nodes:
+-- domains and values need catalog.concept:read, metrics catalog.metric-definition:read and, when protected
+-- (D7b), their source's read permission. Other nodes keep <cell>.<type>:read.
 CREATE OR REPLACE FUNCTION graph.node_visible(p_urn text, p_actor uuid, p_delegation uuid) RETURNS boolean
 LANGUAGE sql STABLE AS $$
     SELECT EXISTS (
         SELECT 1 FROM graph.nodes n
         WHERE n.urn = p_urn AND n.lifecycle <> 'deleted'
-          AND platform.can(p_actor, n.cell || '.' || n.type || ':read', p_delegation)
+          AND platform.can(p_actor,
+                           CASE WHEN n.cell = 'platform' AND n.type IN ('domain', 'value') THEN 'catalog.concept:read'
+                                WHEN n.cell = 'platform' AND n.type = 'metric' THEN 'catalog.metric-definition:read'
+                                ELSE n.cell || '.' || n.type || ':read' END,
+                           p_delegation)
           AND (n.cell <> 'platform' OR n.type <> 'metric' OR n.classification IN ('public', 'internal')
                OR platform.can(p_actor, (SELECT m.read_permission FROM graph.metric_definitions m
                                          WHERE m.urn = n.urn), p_delegation))
     )
+$$;
+
+-- Neighbors across aliases (D3): an edge stored to A before A merged into B is a neighbor of B and shows B,
+-- without rewriting the edge. Same signature, visibility rules and limits as 2001.
+CREATE OR REPLACE FUNCTION graph.neighbors(p_urn text, p_actor uuid, p_delegation uuid DEFAULT NULL, p_limit int DEFAULT 100)
+RETURNS TABLE (urn text, cell text, type text, label text, classification text, relation text, direction text)
+LANGUAGE sql STABLE AS $$
+    WITH start AS (SELECT graph.resolve(p_urn) AS urn),
+    names AS (
+        SELECT s.urn AS name FROM start s
+        UNION SELECT a.alias_urn FROM graph.aliases a JOIN start s ON a.urn = s.urn
+    ),
+    hits AS (
+        SELECT e.relation, e.classification AS edge_class, e.from_urn, e.to_urn,
+               CASE WHEN e.from_urn IN (SELECT name FROM names) THEN graph.resolve(e.to_urn)
+                    ELSE graph.resolve(e.from_urn) END AS other,
+               CASE WHEN e.from_urn IN (SELECT name FROM names) THEN 'out' ELSE 'in' END AS direction
+        FROM graph.edges e
+        WHERE e.retracted_at IS NULL
+          AND (e.from_urn IN (SELECT name FROM names) OR e.to_urn IN (SELECT name FROM names))
+    )
+    SELECT DISTINCT n.urn, n.cell, n.type, n.label, n.classification, h.relation, h.direction
+    FROM start s
+    JOIN hits h ON true
+    JOIN graph.nodes n ON n.urn = h.other
+    WHERE graph.node_visible(s.urn, p_actor, p_delegation)
+      AND graph.node_visible(h.other, p_actor, p_delegation)
+      AND (h.edge_class <> 'restricted' OR EXISTS (
+           SELECT 1 FROM graph.consents c
+           WHERE c.relation = h.relation AND c.subject_urn IN (h.from_urn, h.to_urn, h.other, s.urn)
+             AND c.revoked_at IS NULL AND c.expires_at > now()))
+    ORDER BY h.relation, n.urn
+    LIMIT least(greatest(p_limit, 1), 500)
 $$;
 
 -- --- privileges (D8) ----------------------------------------------------------------------------------

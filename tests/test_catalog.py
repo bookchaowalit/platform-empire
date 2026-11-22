@@ -2016,7 +2016,7 @@ def test_graph_reads_hide_protected_metric_nodes(cluster):
     ws = seeded(cluster)
     with cluster.connect("platform_api") as conn:
         viewer = add_member(conn, ws, "graph-viewer", "human")
-        add_role(conn, ws, viewer, "graph-viewer", ["platform.metric:read"])
+        add_role(conn, ws, viewer, "graph-viewer", ["catalog.metric-definition:read"])
         conn.commit()
     with cluster.connect("graph_api") as conn:
         use_workspace(conn, ws.id)
@@ -2090,3 +2090,32 @@ def test_kept_edge_carries_the_latest_execution(cluster):
         "SELECT execution_id FROM graph.edges WHERE from_urn = %s AND retracted_at IS NULL",
         (f"empire:goals:goal:{goal}",),
     ) == [(second,)]
+
+
+def test_neighbors_follow_merged_concepts(cluster):
+    ws = seeded(cluster)
+    make(cluster, ws, "aa", "bb")
+    goal = str(uuid.uuid4())
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal, title="Old link"))
+    ingest(
+        cluster,
+        ws,
+        set_event(
+            ws, "goals", "goal", goal, "in-domain", ["empire:platform:domain:aa"], 1
+        ),
+    )
+    cat(
+        cluster, ws.id, "catalog_merge", caller(ws.owner), "domain", "aa", "bb", "merge"
+    )
+    with cluster.connect("graph_api") as conn:
+        use_workspace(conn, ws.id)
+        from_goal = conn.execute(
+            "SELECT urn FROM graph.neighbors(%s, %s)",
+            (f"empire:goals:goal:{goal}", ws.owner),
+        ).fetchall()
+        from_bb = conn.execute(
+            "SELECT urn, direction FROM graph.neighbors(%s, %s)",
+            (urn(ws, "domain", "bb"), ws.owner),
+        ).fetchall()
+    assert from_goal == [(urn(ws, "domain", "bb"),)]
+    assert from_bb == [(f"empire:goals:goal:{goal}", "in")]
