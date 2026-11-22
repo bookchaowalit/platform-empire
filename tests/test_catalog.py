@@ -13,7 +13,14 @@ from typing import Any
 
 import psycopg
 import pytest
-from conftest import Workspace, add_member, create_workspace, new_id, use_workspace
+from conftest import (
+    Workspace,
+    add_member,
+    create_workspace,
+    delegate,
+    new_id,
+    use_workspace,
+)
 from psycopg.types.json import Jsonb
 
 from empire_platform import devdb
@@ -70,7 +77,17 @@ def cat(cluster, ws: uuid.UUID, fn: str, *args: Any) -> Any:
                     json.loads(exc.diag.message_detail or "{}"),
                 ) from None
             raise
-    return row[0] if row else None
+    result = row[0] if row else None
+    # refused writes come back as a value so the authorization decision row commits
+    if (
+        isinstance(result, dict)
+        and isinstance(result.get("status"), int)
+        and "error" in result
+    ):
+        raise CatalogError(
+            result["status"], result["error"], {"reason": result.get("reason")}
+        )
+    return result
 
 
 def caller(
@@ -1603,3 +1620,234 @@ def test_existing_workspace_is_seeded_by_the_migration(tmp_path, monkeypatch):  
         assert set(CATALOG) <= perms
     finally:
         cluster.stop()
+
+
+# --- review fixes (Codex round on 2006) ------------------------------------------------------------
+
+
+def test_refused_write_keeps_its_decision_record(cluster):
+    ws = seeded(cluster)
+    with cluster.connect("platform_api") as conn:
+        editor = add_member(conn, ws, "no-admin", "human")
+        add_role(conn, ws, editor, "no-admin", ["catalog.concept:read"])
+        conn.commit()
+    assert code_of(
+        lambda: cat(
+            cluster,
+            ws.id,
+            "catalog_retire",
+            caller(editor),
+            "domain",
+            "work",
+            "x",
+            None,
+        )
+    ) == (
+        403,
+        "deny",
+    )
+    assert su(
+        cluster,
+        "SELECT decision, reason FROM platform.authorization_decisions WHERE workspace_id = %s"
+        " AND actor_identity_id = %s AND action = 'catalog.concept:admin'",
+        (ws.id, editor),
+    ) == [("deny", "no_permission")]
+
+
+def test_kept_edge_takes_the_new_sets_classification(cluster):
+    ws = seeded(cluster)
+    goal = str(uuid.uuid4())
+    target = ["empire:platform:domain:unclassified"]
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal))
+    ingest(cluster, ws, set_event(ws, "goals", "goal", goal, "in-domain", target, 1))
+    ingest(
+        cluster,
+        ws,
+        set_event(
+            ws,
+            "goals",
+            "goal",
+            goal,
+            "in-domain",
+            target,
+            2,
+            classification="restricted",
+        ),
+    )
+    assert su(
+        cluster,
+        "SELECT classification FROM graph.edges WHERE from_urn = %s AND retracted_at IS NULL",
+        (f"empire:goals:goal:{goal}",),
+    ) == [("restricted",)]
+    assert (
+        cat(cluster, ws.id, "catalog_review", caller(ws.owner))["items"] == []
+    )  # no consent
+
+
+def test_dedupe_needed_unless_the_filter_excludes_every_shared_series(cluster):
+    ws = seeded(cluster)
+    sleep = metric_body(cluster, ws, "health.sleep_hours")
+    plain = {k: v for k, v in sleep["source"].items() if k != "dedupe"}
+    for filt in ({}, {"unit": "h"}, {"metric_type": "weight", "unit": "kg"}):
+        body = {**sleep, "source": {**plain, "filter": filt}}
+        assert (
+            code_of(lambda body=body: put(cluster, ws, "health.s1", body))[1]
+            == "dedupe_required"
+        ), filt
+    water = {
+        **sleep,
+        "source": {**plain, "filter": {"metric_type": "steps", "unit": "count"}},
+    }
+    assert put(cluster, ws, "health.steps", water)["version"] == 1
+
+
+def test_review_counts_each_entity_once_and_keeps_direct_unclassified(cluster):
+    ws = seeded(cluster)
+    make(cluster, ws, "aa", "bb", "cc", "dd")
+    goal = str(uuid.uuid4())
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal, title="Both"))
+    ingest(
+        cluster,
+        ws,
+        set_event(
+            ws,
+            "goals",
+            "goal",
+            goal,
+            "in-domain",
+            ["empire:platform:domain:aa", "empire:platform:domain:bb"],
+            1,
+        ),
+    )
+    cat(
+        cluster, ws.id, "catalog_merge", caller(ws.owner), "domain", "aa", "bb", "merge"
+    )
+    cat(
+        cluster,
+        ws.id,
+        "catalog_split",
+        caller(ws.owner),
+        "domain",
+        "bb",
+        ["cc", "dd"],
+        "split",
+        None,
+    )
+    items = [
+        i
+        for i in cat(cluster, ws.id, "catalog_review", caller(ws.owner))["items"]
+        if i["concept"]["slug"] == "bb"
+    ]
+    assert [(i["count"], i["recent_labels"]) for i in items] == [(1, ["Both"])]
+    # a set naming a split concept (sent by its old merged URN) and unclassified directly
+    other = str(uuid.uuid4())
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", other, title="Direct"))
+    out = ingest(
+        cluster,
+        ws,
+        set_event(
+            ws,
+            "goals",
+            "goal",
+            other,
+            "in-domain",
+            ["empire:platform:domain:aa", "empire:platform:domain:unclassified"],
+            1,
+        ),
+    )
+    assert out == "fallback_unclassified"
+    [(_, prov)] = live_edges(cluster, f"empire:goals:goal:{other}")
+    assert prov["requested"] == [
+        urn(ws, "domain", "aa")
+    ]  # what the cell sent, before resolve
+    slugs = {
+        i["concept"]["slug"]
+        for i in cat(cluster, ws.id, "catalog_review", caller(ws.owner))["items"]
+        if "Direct" in i["recent_labels"]
+    }
+    assert slugs == {"bb", "unclassified"}
+
+
+def test_signup_by_the_old_function_is_still_seeded(cluster):
+    """A signups row written without the new tenancy_signup (a signup in flight during the migration)."""
+    with cluster.connect("platform_api") as conn:
+        ws = create_workspace(
+            conn, f"inflight-{uuid.uuid4().hex[:8]}", ["tasks.task:read"]
+        )
+        conn.commit()
+    with cluster.connect("empire_migrator") as conn:
+        use_workspace(conn, ws.id)
+        conn.execute(
+            "INSERT INTO platform.signups (subject_hmac, product, workspace_id, identity_id)"
+            " VALUES (%s, 'finance', %s, %s)",
+            (f"h:{uuid.uuid4()}", ws.id, ws.owner),
+        )
+        conn.commit()
+    assert [
+        v["version"] for v in cat(cluster, ws.id, "catalog_versions", caller(ws.owner))
+    ] == [1]
+
+
+def test_http_ingest_passes_the_publisher_to_the_catalog(
+    cluster, tmp_path
+):  # AC-47 over HTTP
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_api.routes import register
+    from tasks_api.auth import TokenVerifier
+
+    from empire_platform.devtoken import key_pair, mint
+
+    private_pem, public_pem = key_pair(tmp_path)
+    app = FastAPI()
+    register(
+        app,
+        connect_platform=lambda: cluster.connect("tasks_api"),
+        platform_verifier=TokenVerifier(
+            public_pem, "catalog-test", audience="platform-api"
+        ),
+        graph_verifier=TokenVerifier(public_pem, "catalog-test", audience="graph-api"),
+    )
+    client = TestClient(app)
+    ws = seeded(cluster, CATALOG + READS + ["graph.operating:write"])
+    with cluster.connect("platform_api") as conn:
+        bot = add_member(conn, ws, "operating-publisher", "automation")
+        narrow = delegate(conn, ws, ws.owner, bot, ["graph.operating:write"])
+        wide = delegate(
+            conn,
+            ws,
+            ws.owner,
+            bot,
+            ["graph.operating:write", "diary.journal-entry:read"],
+        )
+        conn.commit()
+    kpi = str(uuid.uuid4())
+
+    def send(delegation, version):
+        headers = {
+            "Authorization": "Bearer "
+            + mint(
+                private_pem,
+                sub=bot,
+                ws=ws.id,
+                issuer="catalog-test",
+                audience="graph-api",
+                delegation=delegation,
+                obo=ws.owner,
+            )
+        }
+        evt = set_event(
+            ws,
+            "operating",
+            "kpi",
+            kpi,
+            "defined-by",
+            ["empire:platform:metric:diary.energy"],
+            version,
+        )
+        response = client.post("/v1/graph/events", headers=headers, json=evt)
+        assert response.status_code == 200, response.text
+        return response.json()["outcome"]
+
+    assert send(narrow, 1) == "rejected_relation"
+    assert send(wide, 2) == "edges"

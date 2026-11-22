@@ -5,6 +5,9 @@
 -- platform.current_workspace(); tasks_api gets EXECUTE on the graph.catalog_* entry points and no table
 -- grant. Errors are raised with SQLSTATE 'CT' || <http status> (CT403, CT404, CT409, CT422), the message is
 -- the error code and DETAIL is a JSON object, so the HTTP layer maps them without parsing text.
+-- A write the decision point refuses is not raised: the entry point returns
+-- {"status": 403, "error": <decision>, "reason": <reason>} so the caller can commit and the
+-- platform.authorization_decisions row is kept (a raise would roll it back).
 
 -- --- relation types (D5) -------------------------------------------------------------------------
 
@@ -198,7 +201,7 @@ END
 $$;
 
 -- Writes go through the platform decision point with p_lock, so workspace policies (requires_approval) apply.
-CREATE FUNCTION graph.catalog_authorize(p_caller jsonb, p_permission text, p_type text, p_id text) RETURNS void
+CREATE FUNCTION graph.catalog_authorize(p_caller jsonb, p_permission text, p_type text, p_id text) RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE
     v_decision text;
@@ -213,8 +216,9 @@ BEGIN
                             (p_caller ->> 'on_behalf_of')::uuid, (p_caller ->> 'approval')::uuid,
                             coalesce(p_caller ->> 'channel', 'api'), true) a;
     IF v_decision IS DISTINCT FROM 'allow' THEN
-        PERFORM graph.catalog_fail(403, coalesce(v_decision, 'deny'), jsonb_build_object('reason', v_reason));
+        RETURN jsonb_build_object('status', 403, 'error', coalesce(v_decision, 'deny'), 'reason', v_reason);
     END IF;
+    RETURN NULL;
 END
 $$;
 
@@ -529,9 +533,13 @@ BEGIN
         IF v_source ->> 'time_field' IS NULL THEN
             PERFORM graph.catalog_fail(422, 'time_field_required');
         END IF;
-    ELSIF jsonb_array_length(v_reg.multi_writer) > 0
-          AND (coalesce(v_filter, '{}'::jsonb) = '{}'::jsonb
-               OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_reg.multi_writer) w WHERE v_filter @> w.value)) THEN
+    ELSIF jsonb_array_length(v_reg.multi_writer) > 0 AND NOT EXISTS (
+        -- the filter rules out every multi-writer series only when it pins one of their keys to another value
+        SELECT 1 FROM (SELECT DISTINCT jsonb_object_keys(w.value) AS k
+                       FROM jsonb_array_elements(v_reg.multi_writer) w) keys
+        WHERE coalesce(v_filter, '{}'::jsonb) ? keys.k
+          AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_reg.multi_writer) w
+                          WHERE w.value -> keys.k = v_filter -> keys.k)) THEN
         PERFORM graph.catalog_fail(422, 'dedupe_required');
     END IF;
     -- value_range: bounds of one raw observation
@@ -698,6 +706,7 @@ CREATE FUNCTION graph.catalog_create_concept(
     p_caller jsonb, p_kind text, p_slug text, p_label text, p_description text, p_parent text, p_note text
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
+    v_denied  jsonb;
     v_ws      uuid := graph.catalog_workspace();
     v_exec    uuid;
     v_version int;
@@ -707,7 +716,10 @@ BEGIN
        OR p_label IS NULL OR length(p_label) NOT BETWEEN 1 AND 200 OR length(p_description) > 4000 THEN
         PERFORM graph.catalog_fail(422, 'invalid_concept');
     END IF;
-    PERFORM graph.catalog_authorize(p_caller, 'catalog.concept:write', 'catalog.concept', p_kind || '/' || p_slug);
+    v_denied := graph.catalog_authorize(p_caller, 'catalog.concept:write', 'catalog.concept', p_kind || '/' || p_slug);
+    IF v_denied IS NOT NULL THEN
+        RETURN v_denied;
+    END IF;
     PERFORM pg_advisory_xact_lock(graph.taxonomy_lock_key(v_ws));
     IF EXISTS (SELECT 1 FROM graph.concepts WHERE workspace_id = v_ws AND kind = p_kind AND slug = p_slug) THEN
         PERFORM graph.catalog_fail(409, 'exists');
@@ -732,6 +744,7 @@ $$;
 CREATE FUNCTION graph.catalog_update_concept(p_caller jsonb, p_kind text, p_slug text, p_patch jsonb)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
+    v_denied  jsonb;
     v_ws      uuid := graph.catalog_workspace();
     v_exec    uuid;
     v_before  graph.concepts;
@@ -741,7 +754,10 @@ BEGIN
     IF jsonb_typeof(p_patch) IS DISTINCT FROM 'object' THEN
         PERFORM graph.catalog_fail(422, 'invalid_patch');
     END IF;
-    PERFORM graph.catalog_authorize(p_caller, 'catalog.concept:write', 'catalog.concept', p_kind || '/' || p_slug);
+    v_denied := graph.catalog_authorize(p_caller, 'catalog.concept:write', 'catalog.concept', p_kind || '/' || p_slug);
+    IF v_denied IS NOT NULL THEN
+        RETURN v_denied;
+    END IF;
     PERFORM pg_advisory_xact_lock(graph.taxonomy_lock_key(v_ws));
     v_before := graph.find_concept(v_ws, p_kind, p_slug);
     v := v_before;
@@ -774,6 +790,7 @@ $$;
 CREATE FUNCTION graph.catalog_merge(p_caller jsonb, p_kind text, p_slug text, p_into text, p_note text)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
+    v_denied  jsonb;
     v_ws      uuid := graph.catalog_workspace();
     v_exec    uuid;
     v_version int;
@@ -783,7 +800,10 @@ DECLARE
     v_m       graph.metric_definitions;
     v_moved   text[] := '{}';
 BEGIN
-    PERFORM graph.catalog_authorize(p_caller, 'catalog.concept:admin', 'catalog.concept', p_kind || '/' || p_slug);
+    v_denied := graph.catalog_authorize(p_caller, 'catalog.concept:admin', 'catalog.concept', p_kind || '/' || p_slug);
+    IF v_denied IS NOT NULL THEN
+        RETURN v_denied;
+    END IF;
     PERFORM pg_advisory_xact_lock(graph.taxonomy_lock_key(v_ws));
     v_source := graph.find_concept(v_ws, p_kind, p_slug);
     IF p_into IS NOT DISTINCT FROM p_slug THEN
@@ -822,6 +842,7 @@ CREATE FUNCTION graph.catalog_split(
     p_caller jsonb, p_kind text, p_slug text, p_into text[], p_note text, p_metric_moves jsonb DEFAULT NULL
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
+    v_denied  jsonb;
     v_ws      uuid := graph.catalog_workspace();
     v_exec    uuid;
     v_version int;
@@ -832,7 +853,10 @@ DECLARE
     v         graph.concepts;
     v_moved   jsonb;
 BEGIN
-    PERFORM graph.catalog_authorize(p_caller, 'catalog.concept:admin', 'catalog.concept', p_kind || '/' || p_slug);
+    v_denied := graph.catalog_authorize(p_caller, 'catalog.concept:admin', 'catalog.concept', p_kind || '/' || p_slug);
+    IF v_denied IS NOT NULL THEN
+        RETURN v_denied;
+    END IF;
     PERFORM pg_advisory_xact_lock(graph.taxonomy_lock_key(v_ws));
     v_source := graph.find_concept(v_ws, p_kind, p_slug);
     IF p_slug = ANY (coalesce(p_into, '{}')) THEN
@@ -866,6 +890,7 @@ CREATE FUNCTION graph.catalog_retire(
     p_caller jsonb, p_kind text, p_slug text, p_note text, p_metric_moves jsonb DEFAULT NULL
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
+    v_denied  jsonb;
     v_ws      uuid := graph.catalog_workspace();
     v_exec    uuid;
     v_version int;
@@ -873,7 +898,10 @@ DECLARE
     v         graph.concepts;
     v_moved   jsonb;
 BEGIN
-    PERFORM graph.catalog_authorize(p_caller, 'catalog.concept:admin', 'catalog.concept', p_kind || '/' || p_slug);
+    v_denied := graph.catalog_authorize(p_caller, 'catalog.concept:admin', 'catalog.concept', p_kind || '/' || p_slug);
+    IF v_denied IS NOT NULL THEN
+        RETURN v_denied;
+    END IF;
     PERFORM pg_advisory_xact_lock(graph.taxonomy_lock_key(v_ws));
     v_source := graph.find_concept(v_ws, p_kind, p_slug);
     PERFORM graph.check_retirable(v_source);
@@ -925,6 +953,7 @@ $$;
 CREATE FUNCTION graph.catalog_put_metric(p_caller jsonb, p_key text, p_body jsonb, p_if_version int DEFAULT NULL)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
+    v_denied  jsonb;
     v_ws       uuid := graph.catalog_workspace();
     v_exec     uuid;
     v_reg      graph.metric_sources;
@@ -934,7 +963,10 @@ BEGIN
     IF p_key IS NULL OR p_key !~ '^[a-z][a-z0-9-]*\.[a-z][a-z0-9_]*$' OR length(p_key) > 80 THEN
         PERFORM graph.catalog_fail(422, 'invalid_key');
     END IF;
-    PERFORM graph.catalog_authorize(p_caller, 'catalog.metric-definition:write', 'catalog.metric-definition', p_key);
+    v_denied := graph.catalog_authorize(p_caller, 'catalog.metric-definition:write', 'catalog.metric-definition', p_key);
+    IF v_denied IS NOT NULL THEN
+        RETURN v_denied;
+    END IF;
     SELECT * INTO v_reg FROM graph.metric_sources
     WHERE cell = p_body -> 'source' ->> 'cell' AND resource = p_body -> 'source' ->> 'resource';
     IF NOT FOUND THEN
@@ -989,13 +1021,19 @@ BEGIN
                      AND c.revoked_at IS NULL AND c.expires_at > now()))
         ),
         placed AS (  -- fallback edges are listed under the concept the cell asked for
-            SELECT v.*, graph.resolve(coalesce(r.requested, v.target)) AS concept_urn
+            SELECT DISTINCT ON (p.concept_urn, v.from_urn) v.*, p.concept_urn
             FROM visible v
-            LEFT JOIN LATERAL (
-                SELECT value AS requested FROM jsonb_array_elements_text(
+            CROSS JOIN LATERAL (
+                SELECT graph.resolve(r.value) AS concept_urn
+                FROM jsonb_array_elements_text(
                     CASE WHEN v.target = v_unclassified AND jsonb_typeof(v.provenance -> 'requested') = 'array'
-                         THEN v.provenance -> 'requested' ELSE '[]'::jsonb END)
-            ) r ON true
+                         THEN v.provenance -> 'requested' ELSE '[]'::jsonb END) r
+                UNION
+                SELECT v.target
+                WHERE v.target <> v_unclassified OR jsonb_typeof(v.provenance -> 'requested') IS DISTINCT FROM 'array'
+                   OR coalesce((v.provenance ->> 'direct')::boolean, false)
+            ) p
+            ORDER BY p.concept_urn, v.from_urn, v.valid_from DESC
         ),
         grouped AS (
             SELECT concept_urn, cell, type, count(*) AS n,
@@ -1197,6 +1235,8 @@ DECLARE
     v_key          text;
     v_want         jsonb;
     v_prov         jsonb;
+    v_edge_class   text;
+    v_canonical    text;
     v_outcome      text;
 BEGIN
     IF v_ws IS DISTINCT FROM platform.current_workspace() THEN
@@ -1239,7 +1279,8 @@ BEGIN
     -- steps 1-2: canonicalise, resolve, check every target; any rejection rejects the whole set
     v_unclassified := graph.concept_urn(v_ws, 'domain', 'unclassified');
     FOR v_ref IN SELECT jsonb_array_elements_text(v_payload -> 'targets') LOOP
-        v_target := graph.resolve(graph.canonical_ref(v_ref, v_ws));
+        v_canonical := graph.canonical_ref(v_ref, v_ws);
+        v_target := graph.resolve(v_canonical);
         v_m := regexp_match(v_target, '^empire:platform:(domain|value|metric):([0-9a-f-]{36}):(.+)$');
         IF v_m IS NULL OR v_m[2] <> v_ws::text OR NOT ('platform:' || v_m[1]) = ANY (v_rt.to_types) THEN
             v_outcome := 'rejected_relation';
@@ -1271,8 +1312,8 @@ BEGIN
                 v_fallback := true;
                 v_want := coalesce(v_wanted -> v_unclassified,
                                    jsonb_build_object('requested', '[]'::jsonb, 'direct', false, 'class', 'internal'));
-                IF NOT (v_want -> 'requested') ? v_target THEN
-                    v_want := jsonb_set(v_want, '{requested}', (v_want -> 'requested') || to_jsonb(v_target));
+                IF NOT (v_want -> 'requested') ? v_canonical THEN
+                    v_want := jsonb_set(v_want, '{requested}', (v_want -> 'requested') || to_jsonb(v_canonical));
                 END IF;
                 v_wanted := jsonb_set(v_wanted, ARRAY[v_unclassified], v_want);
             ELSE
@@ -1298,15 +1339,15 @@ BEGIN
                                                    'outcome', 'fallback_unclassified',
                                                    'direct', coalesce((v_want ->> 'direct')::boolean, false));
         END IF;
-        UPDATE graph.edges SET provenance = v_prov
+        v_edge_class := CASE WHEN graph.rank(v_want ->> 'class') > graph.rank(v_class) THEN v_want ->> 'class'
+                             ELSE v_class END;
+        UPDATE graph.edges SET provenance = v_prov, classification = v_edge_class
         WHERE workspace_id = v_ws AND from_urn = v_subject AND relation = v_relation AND asserted_by = v_parts[1]
           AND retracted_at IS NULL AND graph.resolve(to_urn) = v_key;
         IF NOT FOUND THEN
             INSERT INTO graph.edges (workspace_id, from_urn, to_urn, relation, asserted_by, classification,
                                      provenance, execution_id)
-            VALUES (v_ws, v_subject, v_key, v_relation, v_parts[1],
-                    CASE WHEN graph.rank(v_want ->> 'class') > graph.rank(v_class) THEN v_want ->> 'class'
-                         ELSE v_class END,
+            VALUES (v_ws, v_subject, v_key, v_relation, v_parts[1], v_edge_class,
                     v_prov, (p_event ->> 'execution_id')::uuid)
             ON CONFLICT (workspace_id, from_urn, to_urn, relation, asserted_by)
             DO UPDATE SET retracted_at = NULL, provenance = EXCLUDED.provenance,
@@ -1510,6 +1551,28 @@ BEGIN
     PERFORM set_config('app.workspace_id', '', true);
 END
 $$;
+
+-- A signup already running the old tenancy_signup can wait on this migration's locks and finish after it
+-- commits, creating a workspace the backfill above never saw. Every signup inserts platform.signups, so a
+-- trigger there grants and seeds whichever function version ran (idempotent with the new function).
+CREATE FUNCTION graph.catalog_seed_signup() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    PERFORM set_config('app.workspace_id', NEW.workspace_id::text, true);
+    INSERT INTO platform.role_permissions (workspace_id, role_id, permission)
+    SELECT NEW.workspace_id, r.id, p::platform.permission
+    FROM platform.roles r,
+         unnest(ARRAY['catalog.concept:read', 'catalog.concept:write', 'catalog.concept:admin',
+                      'catalog.metric-definition:read', 'catalog.metric-definition:write']) p
+    WHERE r.workspace_id = NEW.workspace_id AND r.name = 'owner'
+    ON CONFLICT DO NOTHING;
+    PERFORM graph.catalog_seed();
+    RETURN NULL;
+END
+$$;
+REVOKE ALL ON FUNCTION graph.catalog_seed_signup() FROM PUBLIC;
+CREATE TRIGGER signups_catalog_seed AFTER INSERT ON platform.signups
+    FOR EACH ROW EXECUTE FUNCTION graph.catalog_seed_signup();
 
 -- --- new workspaces: tenancy_signup grants the catalog permissions and seeds (D8, Seed) ---------------
 -- Same hand-over as 0010: the function belongs to platform_tenancy, so it is replaced as that role.

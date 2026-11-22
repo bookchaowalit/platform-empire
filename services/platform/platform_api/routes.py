@@ -397,6 +397,17 @@ def register(
             Decide(action=action, resource_type="graph-source", resource_id=cell),
         )
         event = json.dumps(body.model_dump(mode="json"))
+        publisher = json.dumps(
+            {
+                "actor": str(principal.actor),
+                "delegation": str(principal.delegation)
+                if principal.delegation
+                else None,
+                "scopes": sorted(principal.scopes)
+                if principal.scopes is not None
+                else None,
+            }
+        )
         with bound(principal, connect_platform) as conn:
             decision = authorize(conn, request)
             conn.commit()
@@ -416,8 +427,9 @@ def register(
                 outcome = cast(
                     DictRow,
                     conn.execute(
-                        "SELECT graph.ingest_cell_event(%s::jsonb, %s) AS outcome",
-                        (event, cell),
+                        # SPEC-002 D5: the publisher's effective permissions decide protected metric links.
+                        "SELECT graph.ingest_cell_event(%s::jsonb, %s, %s::jsonb) AS outcome",
+                        (event, cell, publisher),
                     ).fetchone(),
                 )["outcome"]
                 conn.commit()
