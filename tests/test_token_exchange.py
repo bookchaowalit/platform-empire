@@ -138,3 +138,21 @@ def test_mcp_with_exchange_never_forwards_the_subject_token(apps, subject, excha
         seen[0].removeprefix("Bearer "), options={"verify_signature": False}
     )
     assert claims["aud"] == "tasks-api"
+
+
+def test_mcp_catalog_tools_work_through_the_exchange(
+    cluster, apps, subject, exchanger, gworld
+):
+    """SPEC-002: the exchange allowlist carries the catalog reads, so the catalog tools work with it."""
+    from test_catalog import seed
+
+    from empire_platform.cells import grant
+
+    grant(cluster, gworld.ws, "catalog")
+    seed(cluster, gworld.ws)
+    tasks, graph = apps
+    token = subject()
+    server = build_server(tasks, graph, lambda: token, exchanger.exchange)
+    result = asyncio.run(server.call_tool("catalog.concepts", {"kind": "domain"}))
+    slugs = {c["slug"] for c in json.loads(result.content[0].text)["items"]}
+    assert {"health", "unclassified"} <= slugs

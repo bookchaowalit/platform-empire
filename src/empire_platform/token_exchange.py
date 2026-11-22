@@ -31,6 +31,9 @@ AUDIENCE_SCOPES = {
         "tasks.occurrence:write",
         "tasks.assignment:write",
         "tasks.suggestion:write",
+        # SPEC-002 catalog reads for the MCP catalog tools (no catalog write or admin by exchange)
+        "catalog.concept:read",
+        "catalog.metric-definition:read",
     ),
     "graph-api": ("graph.query:read",),
 }

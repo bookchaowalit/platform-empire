@@ -1976,3 +1976,94 @@ def test_blank_field_names_are_refused(cluster):
     sleep = json.loads(json.dumps(metric_body(cluster, ws, "health.sleep_hours")))
     sleep["source"]["dedupe"]["field"] = ""
     assert code_of(lambda: put(cluster, ws, "health.b2", sleep))[1] == "invalid_dedupe"
+
+
+# --- review fixes (third Codex round) --------------------------------------------------------------
+
+
+def test_write_refused_when_the_initiator_cannot_be_audited(cluster):
+    ws = seeded(cluster)
+    with cluster.connect("platform_api") as conn:
+        gone = add_member(conn, ws, "gone", "human")
+        use_workspace(conn, ws.id)
+        conn.execute(
+            "UPDATE platform.memberships SET status = 'suspended' WHERE workspace_id = %s AND identity_id = %s",
+            (ws.id, gone),
+        )
+        conn.commit()
+    assert code_of(
+        lambda: cat(
+            cluster,
+            ws.id,
+            "catalog_create_concept",
+            caller(ws.owner, initiated_by=gone),
+            "value",
+            "calm",
+            "Calm",
+            "",
+            None,
+            "x",
+        )
+    ) == (403, "deny")
+    assert su(
+        cluster,
+        "SELECT count(*) FROM graph.concepts WHERE workspace_id = %s AND slug = 'calm'",
+        (ws.id,),
+    ) == [(0,)]
+
+
+def test_graph_reads_hide_protected_metric_nodes(cluster):
+    ws = seeded(cluster)
+    with cluster.connect("platform_api") as conn:
+        viewer = add_member(conn, ws, "graph-viewer", "human")
+        add_role(conn, ws, viewer, "graph-viewer", ["platform.metric:read"])
+        conn.commit()
+    with cluster.connect("graph_api") as conn:
+        use_workspace(conn, ws.id)
+
+        def visible(key, who):
+            return conn.execute(
+                "SELECT graph.node_visible(%s, %s, NULL)", (urn(ws, "metric", key), who)
+            ).fetchone()[0]
+
+        assert visible("time.work_minutes", viewer) is True
+        assert visible("health.sleep_hours", viewer) is False
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM graph.search('นอน', %s, NULL)", (viewer,)
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_set_event_needs_a_valid_subject_urn(cluster):
+    ws = seeded(cluster)
+    evt = set_event(
+        ws,
+        "goals",
+        "goal",
+        "bad id ",
+        "in-domain",
+        ["empire:platform:domain:health"],
+        1,
+    )
+    assert ingest(cluster, ws, evt) == "invalid_event"
+    assert su(
+        cluster,
+        "SELECT count(*) FROM graph.edges WHERE from_urn = %s",
+        (evt["subject"],),
+    ) == [(0,)]
+
+
+def test_filter_pinning_the_writer_needs_no_dedupe(cluster):
+    ws = seeded(cluster)
+    sleep = metric_body(cluster, ws, "health.sleep_hours")
+    source = {k: v for k, v in sleep["source"].items() if k != "dedupe"}
+    pinned = {
+        **sleep,
+        "source": {
+            **source,
+            "filter": {"metric_type": "sleep_hours", "source": "apple-health"},
+        },
+    }
+    assert put(cluster, ws, "health.sleep_watch", pinned)["version"] == 1

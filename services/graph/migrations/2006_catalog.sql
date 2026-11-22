@@ -65,13 +65,15 @@ CREATE TABLE graph.metric_sources (
     read_permission platform.permission NOT NULL,
     -- filters that more than one writer fills; a definition whose filter contains one needs source.dedupe
     multi_writer    jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(multi_writer) = 'array'),
+    -- the field naming the writer of a row; a filter that pins it selects one writer
+    writer_field    text,
     PRIMARY KEY (cell, resource)
 );
 INSERT INTO graph.metric_sources VALUES
     ('health', 'health-metrics', 'confidential', 'health.health-metric:read',
-     '[{"metric_type": "sleep_hours"}, {"metric_type": "exercise_minutes"}, {"metric_type": "weight"}]'),
-    ('diary', 'journal-entries', 'restricted', 'diary.journal-entry:read', '[]'),
-    ('time', 'time-logs', 'internal', 'time.time-log:read', '[]');
+     '[{"metric_type": "sleep_hours"}, {"metric_type": "exercise_minutes"}, {"metric_type": "weight"}]', 'source'),
+    ('diary', 'journal-entries', 'restricted', 'diary.journal-entry:read', '[]', NULL),
+    ('time', 'time-logs', 'internal', 'time.time-log:read', '[]', NULL);
 
 CREATE TABLE graph.metric_definitions (
     urn             text PRIMARY KEY,
@@ -222,18 +224,29 @@ BEGIN
 END
 $$;
 
--- One execution per catalog request (audit_events needs one); NULL when the actor is not an active member.
-CREATE FUNCTION graph.catalog_execution(p_caller jsonb) RETURNS uuid LANGUAGE plpgsql AS $$
+-- One execution per catalog request (audit_events needs one). A request whose initiator is not an active member
+-- is refused (403), so no API write goes unaudited; only the seed (p_required = false) may go on without one.
+CREATE FUNCTION graph.catalog_execution(p_caller jsonb, p_required boolean DEFAULT true) RETURNS uuid
+LANGUAGE plpgsql AS $$
 DECLARE
     v_actor uuid := (p_caller ->> 'actor')::uuid;
     v_id    uuid := (p_caller ->> 'execution')::uuid;
 BEGIN
-    IF v_id IS NOT NULL OR v_actor IS NULL THEN
+    IF v_id IS NOT NULL THEN
         RETURN v_id;
+    END IF;
+    IF v_actor IS NULL THEN
+        IF p_required THEN
+            PERFORM graph.catalog_fail(403, 'deny', jsonb_build_object('reason', 'no_actor'));
+        END IF;
+        RETURN NULL;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM platform.memberships
                    WHERE workspace_id = platform.current_workspace() AND status = 'active'
                      AND identity_id = coalesce((p_caller ->> 'initiated_by')::uuid, v_actor)) THEN
+        IF p_required THEN
+            PERFORM graph.catalog_fail(403, 'deny', jsonb_build_object('reason', 'initiator_not_member'));
+        END IF;
         RETURN NULL;
     END IF;
     INSERT INTO platform.executions (workspace_id, initiated_by, executed_by, on_behalf_of, delegation_id,
@@ -545,7 +558,10 @@ BEGIN
         IF v_source ->> 'time_field' IS NULL THEN
             PERFORM graph.catalog_fail(422, 'time_field_required');
         END IF;
-    ELSIF jsonb_array_length(v_reg.multi_writer) > 0 AND NOT EXISTS (
+    ELSIF jsonb_array_length(v_reg.multi_writer) > 0
+          AND NOT coalesce(v_reg.writer_field IS NOT NULL
+                           AND jsonb_typeof(v_filter -> v_reg.writer_field) = 'string', false)
+          AND NOT EXISTS (
         -- the filter rules out every multi-writer series only when it pins one of their keys to another value
         SELECT 1 FROM (SELECT DISTINCT jsonb_object_keys(w.value) AS k
                        FROM jsonb_array_elements(v_reg.multi_writer) w) keys
@@ -1118,7 +1134,7 @@ BEGIN
         (SELECT owner_identity_id FROM platform.workspaces WHERE id = v_ws))
     INTO v_owner;
     v_caller := jsonb_build_object('actor', v_owner, 'channel', 'workflow');
-    v_exec := graph.catalog_execution(v_caller);
+    v_exec := graph.catalog_execution(v_caller, false);
     FOR v_row IN SELECT * FROM (VALUES
         ('domain', 'health', 'สุขภาพและพลังงาน'),
         ('domain', 'finance', 'การเงินและทรัพยากร'),
@@ -1277,7 +1293,8 @@ BEGIN
     v_subject := graph.resolve(p_event ->> 'subject');
     v_parts := regexp_match(v_subject, '^empire:([a-z0-9-]+):([a-z0-9-]+):');
     SELECT * INTO v_rt FROM graph.relation_types WHERE relation = v_relation;
-    IF v_parts IS NULL OR NOT FOUND OR NOT v_relation = ANY (graph.catalog_relations())
+    IF v_parts IS NULL OR v_subject !~ '^empire:[a-z0-9-]+:[a-z0-9-]+:[A-Za-z0-9:._-]+$' OR NOT FOUND
+       OR NOT v_relation = ANY (graph.catalog_relations())
        OR jsonb_typeof(v_payload -> 'targets') IS DISTINCT FROM 'array'
        OR coalesce(v_payload ->> 'set_version', '') !~ '^[0-9]{1,18}$' THEN
         v_outcome := 'invalid_event';
@@ -1499,6 +1516,20 @@ SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
     SELECT graph.ingest_cell_event(p_event, p_cell, NULL::jsonb)
+$$;
+
+-- Graph reads (neighbors, search, edge visibility) apply D7b to catalog metric nodes as well: a protected
+-- definition is visible only with its source's read permission, the same rule as the catalog routes.
+CREATE OR REPLACE FUNCTION graph.node_visible(p_urn text, p_actor uuid, p_delegation uuid) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM graph.nodes n
+        WHERE n.urn = p_urn AND n.lifecycle <> 'deleted'
+          AND platform.can(p_actor, n.cell || '.' || n.type || ':read', p_delegation)
+          AND (n.cell <> 'platform' OR n.type <> 'metric' OR n.classification IN ('public', 'internal')
+               OR platform.can(p_actor, (SELECT m.read_permission FROM graph.metric_definitions m
+                                         WHERE m.urn = n.urn), p_delegation))
+    )
 $$;
 
 -- --- privileges (D8) ----------------------------------------------------------------------------------
