@@ -42,7 +42,7 @@ def client(cluster, keys) -> TestClient:
 def auth(keys):
     private_pem, _ = keys
 
-    def make(sub, ws, scopes: list[str] | None = None) -> dict[str, str]:
+    def make(sub, ws, scopes: list[str] | None = None, act=None) -> dict[str, str]:
         now = int(time.time())
         claims = {
             "iss": ISSUER,
@@ -55,6 +55,8 @@ def auth(keys):
         }
         if scopes is not None:
             claims["scope"] = " ".join(scopes)
+        if act is not None:
+            claims["act"] = {"sub": str(act)}
         return {
             "Authorization": "Bearer "
             + jwt.encode(claims, private_pem, algorithm="RS256")
@@ -371,3 +373,183 @@ def test_owner_permission_set_matches_the_migration(cluster):
         0
     ]
     assert all(p in sql for p in CATALOG_OWNER)
+
+
+# --- step-2 review fixes ----------------------------------------------------------------------------
+
+
+def test_key_prefix_refusal_does_not_reveal_hidden_keys(cluster, client, auth, ws):
+    with cluster.connect("platform_api") as conn:
+        writer = add_member(conn, ws, "time-writer", "human")
+        add_role(
+            conn,
+            ws,
+            writer,
+            "time-writer",
+            [
+                "catalog.metric-definition:write",
+                "catalog.metric-definition:read",
+                "time.time-log:read",
+            ],
+        )
+        conn.commit()
+    body = {
+        k: v
+        for k, v in client.get(
+            "/v1/catalog/metrics/time.work_minutes", headers=auth(ws.owner, ws.id)
+        )
+        .json()
+        .items()
+        if k
+        in {
+            "label",
+            "domain",
+            "unit",
+            "scale",
+            "value_range",
+            "kind",
+            "objectivity",
+            "source",
+            "aggregation",
+            "cadence",
+            "criteria",
+            "target",
+        }
+    }
+    answers = [
+        client.put(
+            f"/v1/catalog/metrics/{key}",
+            headers=auth(writer, ws.id),
+            json={**body, "if_version": 1},
+        )
+        for key in ("diary.energy", "diary.unknown")
+    ]
+    assert [(r.status_code, r.json()["detail"]["error"]) for r in answers] == [
+        (422, "key_cell_mismatch")
+    ] * 2
+
+
+def test_review_lists_serves_value_to_a_split_value(cluster, client, auth, ws):
+    from test_catalog import ingest, lifecycle, set_event
+
+    goal = str(uuid.uuid4())
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal, title="Be free"))
+    assert (
+        ingest(
+            cluster,
+            ws,
+            set_event(
+                ws,
+                "goals",
+                "goal",
+                goal,
+                "serves-value",
+                ["empire:platform:value:freedom"],
+                1,
+            ),
+        )
+        == "edges"
+    )
+    owner = auth(ws.owner, ws.id)
+    split = client.post(
+        "/v1/catalog/concepts/value/freedom/split",
+        headers=owner,
+        json={"into": ["security", "growth"], "note": "split freedom"},
+    )
+    assert split.status_code == 200, split.text
+    items = client.get("/v1/catalog/review", headers=owner).json()["items"]
+    assert [(i["concept"]["slug"], i["recent_labels"]) for i in items] == [
+        ("freedom", ["Be free"])
+    ]
+
+
+def test_execution_records_initiator_and_ignores_a_stray_approval(
+    cluster, client, auth, ws
+):
+    with cluster.connect("platform_api") as conn:
+        starter = add_member(conn, ws, "starter", "human")
+        conn.commit()
+    headers = {
+        **auth(ws.owner, ws.id, act=starter),
+        "X-Empire-Approval": str(uuid.uuid4()),
+    }
+    made = client.post(
+        "/v1/catalog/concepts",
+        headers=headers,
+        json={"kind": "value", "slug": "calm", "label": "Calm", "note": "x"},
+    )
+    assert made.status_code == 201, made.text
+    rows = su(
+        cluster,
+        "SELECT e.initiated_by, e.executed_by, e.approval_id FROM graph.concept_revisions r"
+        " JOIN platform.executions e ON e.id = r.execution_id WHERE r.urn = %s",
+        (made.json()["urn"],),
+    )
+    assert rows == [(starter, ws.owner, None)]
+
+
+def test_dedupe_prefer_entries_must_be_source_names(client, auth, ws):
+    owner = auth(ws.owner, ws.id)
+    current = client.get("/v1/catalog/metrics/health.sleep_hours", headers=owner).json()
+    body = {
+        k: current[k]
+        for k in (
+            "label",
+            "domain",
+            "unit",
+            "scale",
+            "value_range",
+            "kind",
+            "objectivity",
+            "source",
+            "aggregation",
+            "cadence",
+            "criteria",
+            "target",
+        )
+    }
+    for prefer in ([None], [{}], [""], ["apple-health", " "]):
+        bad = {
+            **body,
+            "source": {
+                **body["source"],
+                "dedupe": {**body["source"]["dedupe"], "prefer": prefer},
+            },
+        }
+        response = client.put(
+            "/v1/catalog/metrics/health.sleep2", headers=owner, json=bad
+        )
+        assert (response.status_code, response.json()["detail"]["error"]) == (
+            422,
+            "invalid_dedupe",
+        ), prefer
+    huge = client.put(
+        "/v1/catalog/metrics/health.sleep_hours",
+        headers=owner,
+        json={**body, "if_version": 2**31},
+    )
+    assert huge.status_code == 422
+
+
+def test_error_responses_match_the_contract(client, auth, ws):
+    from tasks_api.catalog import CatalogError, CatalogInvalid
+
+    owner = auth(ws.owner, ws.id)
+    missing = client.get("/v1/catalog/metrics/time.nothing", headers=owner)
+    CatalogError.model_validate(missing.json())
+    rule = client.post(
+        "/v1/catalog/concepts/domain/unclassified/retire",
+        headers=owner,
+        json={"note": "x"},
+    )
+    CatalogError.model_validate(rule.json())
+    invalid = client.post("/v1/catalog/concepts", headers=owner, json={"kind": "nope"})
+    assert invalid.status_code == 422
+    CatalogInvalid.model_validate(invalid.json())
+    from empire_platform.contracts import OPENAPI
+
+    spec = json.loads(OPENAPI.read_text(encoding="utf-8"))
+    responses = spec["paths"]["/v1/catalog/metrics/{key}"]["get"]["responses"]
+    assert responses["404"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/CatalogError"
+    )

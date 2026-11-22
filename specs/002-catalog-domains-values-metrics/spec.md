@@ -327,9 +327,12 @@ Concepts are addressed by `{kind}/{slug}` (domain and value may share a slug):
 | `GET /v1/catalog/versions` | `catalog.concept:read` |
 
 Concept and metric reads show merged URNs as their target with `was` listing the old URNs.
-MCP: `catalog.concepts`, `catalog.metrics`, `catalog.review` (read only), on both adapters in this repository:
-the local stdio `empire-mcp` and the hosted owner MCP. The hosted one only accepts tokens whose scopes are inside
-`MCP_SCOPES` (`src/empire_platform/token_exchange.py`) and the deployed `owner-mcp` token gets its scopes from
+MCP: `catalog.concepts`, `catalog.metrics`, `catalog.review` (read only) in `build_server`, served by the local
+stdio `empire-mcp` (and the retired Python hosted adapter, which shares it). Remote MCP runs in the Cloudflare Worker
+tool hub (`bookchaowalit/platform-mcp-remote-worker`, retired adapter note in `docs/runbooks/remote-mcp.md`): its
+generic `call_cell` reaches the catalog routes on the tasks cell with the deployed `owner-mcp` token, so no named
+catalog tool is added there in this work. Tokens accepted from the MCP issuer must have scopes inside `MCP_SCOPES`
+(`src/empire_platform/token_exchange.py`) and `owner-mcp` gets its scopes from
 `contracts/automations/v1/automations.json`; both lists gain `catalog.concept:read` and
 `catalog.metric-definition:read` (read scopes only, no write or admin).
 
@@ -487,7 +490,7 @@ goals `tech → skills`, `business → work`, `life → unclassified`, `creative
 - AC-49 `merge A → A`, `split A into {A, B}`, `split A into {B}` and `metric_moves` back to A → 422.
 - AC-50 ratio metric with `value_range.max = 10`, `dedupe.combine = sum`, `mean 7d`, target ≥ 14 → 200; with `combine = last` → 422.
 - AC-51 a writer without `diary.journal-entry:read` gets the same 404 from `PUT /v1/catalog/metrics/diary.energy` (exists) and `PUT /v1/catalog/metrics/diary.unknown` (does not); `PUT` of key `diary.x` with a `time` source → 422.
-- AC-52 catalog reads through the hosted owner MCP with the deployed `owner-mcp` token return the owner's concepts; a catalog write through MCP is refused.
+- AC-52 the stdio MCP catalog tools return the owner's concepts and offer no write; after the `owner-mcp` token is re-minted, `call_cell` on the Worker tool hub reads `GET /v1/catalog/concepts` with it and a catalog write with it is refused (`scope_insufficient`).
 
 ## Decisions on open questions (2026-11-22)
 

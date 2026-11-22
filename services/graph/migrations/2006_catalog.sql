@@ -232,13 +232,18 @@ BEGIN
         RETURN v_id;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM platform.memberships
-                   WHERE workspace_id = platform.current_workspace() AND identity_id = v_actor AND status = 'active') THEN
+                   WHERE workspace_id = platform.current_workspace() AND status = 'active'
+                     AND identity_id = coalesce((p_caller ->> 'initiated_by')::uuid, v_actor)) THEN
         RETURN NULL;
     END IF;
     INSERT INTO platform.executions (workspace_id, initiated_by, executed_by, on_behalf_of, delegation_id,
                                      approval_id, channel, status, finished_at)
-    VALUES (platform.current_workspace(), v_actor, v_actor, coalesce((p_caller ->> 'on_behalf_of')::uuid, v_actor),
-            (p_caller ->> 'delegation')::uuid, (p_caller ->> 'approval')::uuid,
+    VALUES (platform.current_workspace(), coalesce((p_caller ->> 'initiated_by')::uuid, v_actor), v_actor,
+            coalesce((p_caller ->> 'on_behalf_of')::uuid, v_actor), (p_caller ->> 'delegation')::uuid,
+            -- only an approval that exists here and was granted; a stray header value is not recorded
+            (SELECT a.id FROM platform.approvals a
+             WHERE a.id = (p_caller ->> 'approval')::uuid AND a.workspace_id = platform.current_workspace()
+               AND a.decision = 'approved'),
             coalesce(p_caller ->> 'channel', 'api'), 'succeeded', now())
     RETURNING id INTO v_id;
     RETURN v_id;
@@ -529,6 +534,8 @@ BEGIN
            OR jsonb_typeof(v_dedupe -> 'field') IS DISTINCT FROM 'string' OR v_dedupe ->> 'field' !~ '\S'
            OR jsonb_typeof(v_dedupe -> 'prefer') IS DISTINCT FROM 'array'
            OR jsonb_array_length(v_dedupe -> 'prefer') = 0
+           OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_dedupe -> 'prefer') e
+                      WHERE jsonb_typeof(e.value) <> 'string' OR e.value #>> '{}' !~ '\S')
            OR coalesce(v_dedupe ->> 'combine', '') NOT IN ('sum', 'last', 'max') THEN
             PERFORM graph.catalog_fail(422, 'invalid_dedupe');
         END IF;
@@ -980,6 +987,9 @@ BEGIN
     IF NOT graph.catalog_can(p_caller, v_reg.read_permission) THEN
         PERFORM graph.catalog_fail(404, 'not_found');
     END IF;
+    IF split_part(p_key, '.', 1) <> v_reg.cell THEN  -- before the lookup: same answer whether the key exists
+        PERFORM graph.catalog_fail(422, 'key_cell_mismatch', jsonb_build_object('cell', v_reg.cell));
+    END IF;
     PERFORM pg_advisory_xact_lock(graph.taxonomy_lock_key(v_ws));
     SELECT * INTO v_existing FROM graph.metric_definitions WHERE workspace_id = v_ws AND key = p_key FOR UPDATE;
     IF FOUND THEN
@@ -1010,12 +1020,12 @@ BEGIN
         WITH live AS (
             SELECT e.*, graph.resolve(e.to_urn) AS target
             FROM graph.edges e
-            WHERE e.workspace_id = v_ws AND e.relation = 'in-domain' AND e.retracted_at IS NULL
+            WHERE e.workspace_id = v_ws AND e.relation IN ('in-domain', 'serves-value') AND e.retracted_at IS NULL
         ),
         visible AS (
             SELECT l.*, n.cell, n.type, n.label
             FROM live l JOIN graph.nodes n ON n.urn = l.from_urn
-            WHERE (l.target = v_unclassified
+            WHERE ((l.relation = 'in-domain' AND l.target = v_unclassified)
                    OR EXISTS (SELECT 1 FROM graph.concepts c WHERE c.urn = l.target AND c.status = 'split'))
               AND graph.node_visible(l.from_urn, (p_caller ->> 'actor')::uuid, (p_caller ->> 'delegation')::uuid)
               AND (graph.caller_scopes(p_caller) IS NULL

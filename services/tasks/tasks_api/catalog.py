@@ -156,7 +156,7 @@ class MetricPut(Strict):
     ) = None
     status: Literal["active", "retired"] = "active"
     replaced_by: str | None = Field(default=None, pattern=KEY)
-    if_version: int | None = Field(default=None, ge=1)
+    if_version: int | None = Field(default=None, ge=1, le=2_147_483_647)
 
 
 class ReviewConcept(BaseModel):
@@ -199,8 +199,21 @@ class VersionList(BaseModel):
     items: list[TaxonomyVersion]
 
 
+class CatalogError(BaseModel):
+    """Error envelope: HTTPException puts the problem under ``detail``."""
+
+    detail: CatalogProblem
+
+
+class CatalogInvalid(BaseModel):
+    """422: a catalog rule ({"error": ...}) or FastAPI request validation (a list of problems)."""
+
+    detail: CatalogProblem | list[dict[str, Any]]
+
+
 ERRORS: dict[int | str, dict[str, Any]] = {
-    status: {"model": CatalogProblem} for status in (401, 403, 404, 409, 422)
+    **{status: {"model": CatalogError} for status in (401, 403, 404, 409)},
+    422: {"model": CatalogInvalid},
 }
 
 
@@ -228,6 +241,7 @@ def register_catalog(
                 "actor": str(caller.actor),
                 "delegation": str(caller.delegation) if caller.delegation else None,
                 "on_behalf_of": str(caller.on_behalf_of) if caller.delegation else None,
+                "initiated_by": str(caller.initiated_by),
                 "scopes": sorted(caller.scopes) if caller.scopes is not None else None,
                 "approval": str(approval) if approval else None,
                 "channel": caller.channel,
