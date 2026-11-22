@@ -250,6 +250,7 @@ TIME_OWNER = (
     "time.time-log:read",
     "time.time-log:write",
     "time.time-log:delete",
+    "graph.time:write",  # SPEC-002: time logs publish in-domain set events (time-publisher)
 )
 
 RADAR_OWNER = (

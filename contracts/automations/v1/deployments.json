@@ -17,6 +17,8 @@
     {"automation": "projects-publisher", "provider": "railway", "checkout": "life-projects-api", "service": "projects-api", "variable": "PROJECTS_PUBLISHER_TOKEN"},
     {"automation": "roles-skills-publisher", "provider": "railway", "checkout": "life-roles-skills-api", "service": "roles-skills-publisher", "variable": "ROLES_SKILLS_PUBLISHER_TOKEN"},
     {"automation": "roles-skills-publisher", "provider": "railway", "checkout": "life-roles-skills-api", "service": "roles-skills-api", "variable": "ROLES_SKILLS_PUBLISHER_TOKEN"},
+    {"automation": "time-publisher", "provider": "railway", "checkout": "life-time-api", "service": "time-publisher", "variable": "TIME_PUBLISHER_TOKEN"},
+    {"automation": "time-publisher", "provider": "railway", "checkout": "life-time-api", "service": "time-api", "variable": "TIME_PUBLISHER_TOKEN"},
     {"automation": "recurring-gen", "provider": "railway", "checkout": "platform-empire", "service": "recurring-gen", "variable": "RECURRING_GEN_TOKEN"},
     {"automation": "solo-web", "provider": "vercel", "checkout": "life-dashboard-web", "variable": "EMPIRE_CELL_TOKEN", "vercel_project": "owner-web"},
     {"automation": "accounts-web", "provider": "vercel", "checkout": "platform-accounts-api/web", "variable": "ACCOUNTS_API_TOKEN", "vercel_project": "accounts-web"},

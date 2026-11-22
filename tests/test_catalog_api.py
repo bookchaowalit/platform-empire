@@ -553,3 +553,36 @@ def test_error_responses_match_the_contract(client, auth, ws):
     assert responses["404"]["content"]["application/json"]["schema"]["$ref"].endswith(
         "/CatalogError"
     )
+
+
+def test_time_publisher_needs_the_time_grant_first(cluster):  # AC-40
+    import psycopg
+    from conftest import delegate
+
+    from empire_platform.cells import grant
+    from empire_platform.devdb import REPO_ROOT
+
+    with cluster.connect("platform_api") as conn:
+        old = create_workspace(
+            conn,
+            f"pre-{uuid.uuid4().hex[:8]}",
+            ["time.time-log:read", "time.time-log:write"],
+        )
+        bot = add_member(conn, old, "time-publisher", "automation")
+        conn.commit()
+    with (
+        pytest.raises(psycopg.errors.InsufficientPrivilege),
+        cluster.connect("platform_api") as conn,
+    ):
+        delegate(conn, old, old.owner, bot, ["graph.time:write"])
+    assert "graph.time:write" in grant(cluster, old.id, "time")
+    with cluster.connect("platform_api") as conn:
+        delegate(conn, old, old.owner, bot, ["graph.time:write"])
+        conn.commit()
+    targets = json.loads(
+        (
+            REPO_ROOT / "contracts" / "automations" / "v1" / "deployments.json"
+        ).read_text()
+    )["targets"]
+    services = {t["service"] for t in targets if t["automation"] == "time-publisher"}
+    assert services == {"time-api", "time-publisher"}

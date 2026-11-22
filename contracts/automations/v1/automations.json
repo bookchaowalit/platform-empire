@@ -783,6 +783,16 @@
       ]
     },
     {
+      "id": "time-publisher",
+      "writers": [
+        "bookchaowalit/life-time-api:src/cellkit/server.py"
+      ],
+      "does": "delivers the time outbox (time-log lifecycle and SPEC-002 in-domain set events) to the graph",
+      "scopes": [
+        "graph.time:write"
+      ]
+    },
+    {
       "id": "projects-publisher",
       "writers": [
         "bookchaowalit/life-projects-api:src/cellkit/server.py"
