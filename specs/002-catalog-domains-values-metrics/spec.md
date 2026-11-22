@@ -199,7 +199,10 @@ Ingest changes, in `graph.ingest_event_v1` and the unlink path:
    v3 first, v3 leaves only C and v2 is `stale`. The backfill emits, per source row, a lifecycle `.updated` event
    (node data from the row, so time logs that never emitted get a node) followed by the set event, both with the
    row's version read in the same transaction, so a concurrent edit (higher version) wins.
-4. **Single `unlinked` events for catalog relations** are refused (`rejected_relation`); clearing is an empty set.
+4. **Single `linked` and `unlinked` events for catalog relations** are refused (`rejected_relation`), so no event
+   skips the target check; clearing is an empty set. The publishing caller reaches ingest through
+   `graph.ingest_cell_event(event, cell, caller)` (`caller` = the verified token's actor, delegation and scopes);
+   the two-argument form passes no caller, so it can never link a protected metric.
    For other relations the existing unlink path also matches by resolved target, so an edge stored to A before
    A merged into B is retracted by an unlink that now resolves to B.
 

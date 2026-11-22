@@ -237,7 +237,8 @@ def test_signup_rows_and_atomicity(cluster):
     ) == [("service_account",)]
     assert su(
         cluster,
-        "SELECT action FROM platform.audit_events WHERE workspace_id = %s",
+        # SPEC-002: sign-up also seeds the catalog, which audits under service 'catalog'.
+        "SELECT action FROM platform.audit_events WHERE workspace_id = %s AND service = 'identity'",
         (ws,),
     ) == [("workspace.created",)]
     # A bad installation permission aborts the whole signup: no identity, workspace or signup row.
