@@ -1851,3 +1851,128 @@ def test_http_ingest_passes_the_publisher_to_the_catalog(
 
     assert send(narrow, 1) == "rejected_relation"
     assert send(wide, 2) == "edges"
+
+
+# --- review fixes (second Codex round) -------------------------------------------------------------
+
+
+def test_unlinked_with_deleted_flag_only_retracts_that_link(cluster):
+    ws = seeded(cluster)
+    task = str(uuid.uuid4())
+    subject = f"empire:tasks:task:{task}"
+    for target in (urn(ws, "domain", "health"), urn(ws, "domain", "work")):
+        linked = lifecycle(ws, "tasks", "task", task, verb="linked")
+        linked["payload"] = {
+            "relation": "related-to",
+            "target_ref": target,
+            "version": 1,
+        }
+        ingest(cluster, ws, linked)
+    unlinked = lifecycle(ws, "tasks", "task", task, verb="unlinked")
+    unlinked["payload"] = {
+        "relation": "related-to",
+        "target_ref": urn(ws, "domain", "health"),
+        "deleted": True,
+        "version": 9,
+    }
+    assert ingest(cluster, ws, unlinked) == "unlinked"
+    assert [e[0] for e in live_edges(cluster, subject, "related-to")] == [
+        urn(ws, "domain", "work")
+    ]
+    assert su(
+        cluster, "SELECT lifecycle FROM graph.nodes WHERE urn = %s", (subject,)
+    ) == [("active",)]
+
+
+def test_replace_mode_on_a_non_catalog_link_is_a_plain_link(cluster):
+    ws = seeded(cluster)
+    task = str(uuid.uuid4())
+    linked = lifecycle(ws, "tasks", "task", task, verb="linked")
+    linked["payload"] = {
+        "relation": "related-to",
+        "target_ref": urn(ws, "domain", "health"),
+        "mode": "replace",
+        "version": 1,
+    }
+    assert ingest(cluster, ws, linked) == "edge"
+
+
+def test_seed_audits_with_an_active_owner_after_ownership_moved(cluster):
+    with cluster.connect("platform_api") as conn:
+        ws = create_workspace(
+            conn, f"moved-{uuid.uuid4().hex[:8]}", ["tasks.task:read"]
+        )
+        heir = add_member(conn, ws, "heir", "human")
+        use_workspace(conn, ws.id)
+        conn.execute(
+            "INSERT INTO platform.membership_roles (workspace_id, identity_id, role_id) VALUES (%s, %s, %s)",
+            (ws.id, heir, ws.owner_role),
+        )
+        conn.execute(
+            "UPDATE platform.memberships SET status = 'suspended' WHERE workspace_id = %s"
+            " AND identity_id = %s",
+            (ws.id, ws.owner),
+        )
+        conn.commit()
+    seed(cluster, ws.id)
+    rows = su(
+        cluster,
+        "SELECT count(*), count(audit_event_id), min(actor::text), max(actor::text)"
+        " FROM graph.concept_revisions WHERE workspace_id = %s",
+        (ws.id,),
+    )
+    assert rows == [(15, 15, str(heir), str(heir))]
+
+
+def test_snapshot_counts_an_entity_once_after_alias_resolution(cluster):
+    ws = seeded(cluster)
+    make(cluster, ws, "aa")
+    goal = str(uuid.uuid4())
+    ingest(
+        cluster,
+        ws,
+        set_event(
+            ws,
+            "goals",
+            "goal",
+            goal,
+            "in-domain",
+            ["empire:platform:domain:aa", "empire:platform:domain:unclassified"],
+            1,
+        ),
+    )
+    cat(
+        cluster,
+        ws.id,
+        "catalog_merge",
+        caller(ws.owner),
+        "domain",
+        "aa",
+        "unclassified",
+        "fold",
+    )
+    snapshot = cat(cluster, ws.id, "catalog_versions", caller(ws.owner))[-1][
+        "unclassified"
+    ]
+    assert snapshot == [
+        {"cell": "goals", "type": "goal", "classification": "internal", "count": 1}
+    ]
+
+
+def test_blank_field_names_are_refused(cluster):
+    ws = seeded(cluster)
+    blank_time = time_metric(
+        aggregation="last",
+        source={
+            "cell": "time",
+            "resource": "time-logs",
+            "field": "minutes",
+            "time_field": " ",
+        },
+    )
+    assert (
+        code_of(lambda: put(cluster, ws, "time.b1", blank_time))[1] == "invalid_source"
+    )
+    sleep = json.loads(json.dumps(metric_body(cluster, ws, "health.sleep_hours")))
+    sleep["source"]["dedupe"]["field"] = ""
+    assert code_of(lambda: put(cluster, ws, "health.b2", sleep))[1] == "invalid_dedupe"

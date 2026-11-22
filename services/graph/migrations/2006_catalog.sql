@@ -284,12 +284,16 @@ CREATE FUNCTION graph.unclassified_snapshot(p_ws uuid) RETURNS jsonb LANGUAGE sq
     SELECT coalesce(jsonb_agg(jsonb_build_object('cell', cell, 'type', type, 'classification', classification,
                                                  'count', n) ORDER BY cell, type, classification), '[]'::jsonb)
     FROM (
-        SELECT split_part(e.from_urn, ':', 2) AS cell, split_part(e.from_urn, ':', 3) AS type,
-               e.classification, count(*) AS n
-        FROM graph.edges e
-        WHERE e.workspace_id = p_ws AND e.relation = 'in-domain' AND e.retracted_at IS NULL
-          AND e.classification <> 'restricted'
-          AND graph.resolve(e.to_urn) = graph.concept_urn(p_ws, 'domain', 'unclassified')
+        SELECT split_part(from_urn, ':', 2) AS cell, split_part(from_urn, ':', 3) AS type, classification,
+               count(*) AS n
+        FROM (
+            SELECT DISTINCT ON (e.from_urn) e.from_urn, e.classification
+            FROM graph.edges e
+            WHERE e.workspace_id = p_ws AND e.relation = 'in-domain' AND e.retracted_at IS NULL
+              AND graph.resolve(e.to_urn) = graph.concept_urn(p_ws, 'domain', 'unclassified')
+            ORDER BY e.from_urn, graph.rank(e.classification) DESC
+        ) entity
+        WHERE classification <> 'restricted'
         GROUP BY 1, 2, 3
     ) s
 $$;
@@ -511,9 +515,10 @@ BEGIN
                                    jsonb_build_object('scale', v.scale, 'aggregation', v.aggregation));
     END IF;
     -- source pointer
-    IF jsonb_typeof(v_source -> 'field') IS DISTINCT FROM 'string'
+    IF jsonb_typeof(v_source -> 'field') IS DISTINCT FROM 'string' OR v_source ->> 'field' !~ '\S'
        OR (v_filter IS NOT NULL AND jsonb_typeof(v_filter) <> 'object')
-       OR (v_source ? 'time_field' AND jsonb_typeof(v_source -> 'time_field') <> 'string') THEN
+       OR (v_source ? 'time_field' AND (jsonb_typeof(v_source -> 'time_field') <> 'string'
+                                        OR v_source ->> 'time_field' !~ '\S')) THEN
         PERFORM graph.catalog_fail(422, 'invalid_source');
     END IF;
     IF v.aggregation = 'last' AND v_source ->> 'time_field' IS NULL THEN
@@ -521,7 +526,7 @@ BEGIN
     END IF;
     IF v_dedupe IS NOT NULL THEN
         IF jsonb_typeof(v_dedupe) <> 'object' OR v_dedupe ->> 'by' IS DISTINCT FROM 'day'
-           OR jsonb_typeof(v_dedupe -> 'field') IS DISTINCT FROM 'string'
+           OR jsonb_typeof(v_dedupe -> 'field') IS DISTINCT FROM 'string' OR v_dedupe ->> 'field' !~ '\S'
            OR jsonb_typeof(v_dedupe -> 'prefer') IS DISTINCT FROM 'array'
            OR jsonb_array_length(v_dedupe -> 'prefer') = 0
            OR coalesce(v_dedupe ->> 'combine', '') NOT IN ('sum', 'last', 'max') THEN
@@ -1090,7 +1095,18 @@ BEGIN
     IF EXISTS (SELECT 1 FROM graph.taxonomy_versions WHERE workspace_id = v_ws) THEN
         RETURN 0;
     END IF;
-    SELECT owner_identity_id INTO v_owner FROM platform.workspaces WHERE id = v_ws;
+    -- audit needs an active member: the recorded owner, else (ownership moved) an active owner-role member
+    SELECT coalesce(
+        (SELECT m.identity_id FROM platform.workspaces w
+         JOIN platform.memberships m ON m.workspace_id = w.id AND m.identity_id = w.owner_identity_id
+         WHERE w.id = v_ws AND m.status = 'active'),
+        (SELECT m.identity_id FROM platform.memberships m
+         JOIN platform.membership_roles mr USING (workspace_id, identity_id)
+         JOIN platform.roles r ON r.workspace_id = mr.workspace_id AND r.id = mr.role_id
+         WHERE m.workspace_id = v_ws AND m.status = 'active' AND r.name = 'owner'
+         ORDER BY m.created_at, m.identity_id LIMIT 1),
+        (SELECT owner_identity_id FROM platform.workspaces WHERE id = v_ws))
+    INTO v_owner;
     v_caller := jsonb_build_object('actor', v_owner, 'channel', 'workflow');
     v_exec := graph.catalog_execution(v_caller);
     FOR v_row IN SELECT * FROM (VALUES
@@ -1376,7 +1392,8 @@ DECLARE
     v_parts   text[];
     v_outcome text;
 BEGIN
-    IF v_verb = 'linked' AND v_payload ->> 'mode' = 'replace' THEN
+    IF v_verb = 'linked' AND v_payload ->> 'mode' = 'replace'
+       AND v_payload ->> 'relation' = ANY (graph.catalog_relations()) THEN
         RETURN graph.ingest_set_event(p_event, p_caller);
     END IF;
     IF v_ws IS DISTINCT FROM platform.current_workspace() THEN
@@ -1393,6 +1410,23 @@ BEGIN
         RETURN CASE WHEN FOUND THEN 'rejected_relation' ELSE 'duplicate' END;
     END IF;
 
+    IF v_verb = 'unlinked' THEN
+        INSERT INTO graph.inbox (consumer, event_id, workspace_id, outcome)
+        VALUES ('graph', v_id, v_ws, 'pending')
+        ON CONFLICT DO NOTHING;
+        IF NOT FOUND THEN
+            RETURN 'duplicate';
+        END IF;
+        -- matches by resolved target: an edge stored to A before A merged into B is retracted by an unlink of B
+        UPDATE graph.edges SET retracted_at = now()
+        WHERE workspace_id = v_ws AND from_urn = v_subject
+          AND graph.resolve(to_urn) = graph.resolve(v_payload ->> 'target_ref')
+          AND relation = v_payload ->> 'relation'
+          AND asserted_by = v_parts[1] AND retracted_at IS NULL;
+        UPDATE graph.inbox SET outcome = 'unlinked' WHERE consumer = 'graph' AND event_id = v_id;
+        RETURN 'unlinked';
+    END IF;
+
     IF v_verb = 'deleted' OR coalesce((v_payload ->> 'deleted')::boolean, false) THEN
         -- same per-subject lock as set events, then tombstone versions for every catalog relation
         PERFORM pg_advisory_xact_lock(graph.subject_lock_key(v_ws, v_subject));
@@ -1407,23 +1441,7 @@ BEGIN
         RETURN v_outcome;
     END IF;
 
-    IF v_verb <> 'unlinked' THEN
-        RETURN graph.ingest_event_v1(p_event);
-    END IF;
-    INSERT INTO graph.inbox (consumer, event_id, workspace_id, outcome)
-    VALUES ('graph', v_id, v_ws, 'pending')
-    ON CONFLICT DO NOTHING;
-    IF NOT FOUND THEN
-        RETURN 'duplicate';
-    END IF;
-    -- matches by resolved target: an edge stored to A before A merged into B is retracted by an unlink of B
-    UPDATE graph.edges SET retracted_at = now()
-    WHERE workspace_id = v_ws AND from_urn = v_subject
-      AND graph.resolve(to_urn) = graph.resolve(v_payload ->> 'target_ref')
-      AND relation = v_payload ->> 'relation'
-      AND asserted_by = v_parts[1] AND retracted_at IS NULL;
-    UPDATE graph.inbox SET outcome = 'unlinked' WHERE consumer = 'graph' AND event_id = v_id;
-    RETURN 'unlinked';
+    RETURN graph.ingest_event_v1(p_event);
 END
 $$;
 
