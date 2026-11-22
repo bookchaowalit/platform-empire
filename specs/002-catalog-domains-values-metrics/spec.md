@@ -1,6 +1,6 @@
 # SPEC-002 — Catalog: shared domains, values and metric definitions
 
-Status: proposed (2026-11-22, revised after two Codex review rounds the same day). Owner decision needed on the open
+Status: proposed (2026-11-22, revised after three Codex review rounds the same day). Owner decision needed on the open
 questions below before build.
 
 ## Problem
@@ -79,16 +79,20 @@ with a required `note` (why it changed). Label/description edits do not bump it.
 
 Revisions: `graph.concept_revisions` and `graph.metric_revisions` are append-only (same RLS), one row per write
 with the full new row, the caller, the execution id and the taxonomy version. Platform audit
-(`platform.record_audit`) keeps its existing contract (`before_hash` / `after_hash`), with the revision id in the
-audit event so the full change is recoverable from the revision table.
+(`platform.record_audit`) keeps its existing contract (`before_hash` / `after_hash`, `resource_id` = kind/slug or key)
+and returns the audit event id; the revision row stores it as `audit_event_id`, so each audit event links to the
+revision that holds the full change. No change to the audit table.
 
 ### D3. Change without rewriting old data
 
 - **Rename:** update `label`. URN unchanged, no edge touched.
-- **Serialisation:** every taxonomy write (create, merge, split, retire, parent change) first takes a per-workspace
+- **Serialisation:** every taxonomy write (create, merge, split, retire, parent change) and every metric `PUT` that
+  creates a metric or changes its `domain_urn` first takes a per-workspace
   transaction lock (`pg_advisory_xact_lock` on the workspace's taxonomy key), then re-reads the status of every
   concept it touches. Two merges started together (A → B and B → A) therefore run one after the other, and the
-  second sees its target `merged` and fails with 409; no alias cycle can be written.
+  second sees its target `merged` and fails with 409; no alias cycle can be written. A metric `PUT` and a retire of
+  its domain likewise serialise: the `PUT` re-checks the domain is `active` after the lock, and the retire sees the
+  committed metric.
 - **Merge A into B:** B must be `active`. A gets `status = merged`, `replaced_by = {B}`, and a
   `graph.aliases` row A → B. In the same transaction every existing alias whose target is A is repointed to B,
   so aliases are always one hop and `graph.resolve()` (single lookup) stays correct after chained merges
@@ -101,9 +105,10 @@ audit event so the full change is recoverable from the revision table.
 - After merge, new links to A land on B through the alias. After split or retire, new `in-domain` links to A fall
   back to `unclassified` with A recorded as requested; other catalog relations to A are rejected (D5).
 - **Metrics that reference a domain** (`domain_urn`): on merge they move to B in the same transaction
-  (each metric's `version` bumps). Split and retire are refused with 409 listing the affected metric keys unless
-  the request carries `metric_moves: {<key>: <active domain slug>}` covering all of them, applied in the same
-  transaction.
+  (each metric's `version` bumps). Split and retire are refused with 409 unless the request carries
+  `metric_moves: {<key>: <active domain slug>}` covering all affected metrics, applied in the same transaction.
+  The 409 lists only the keys the caller may read under D7b and gives `hidden_dependencies: <n>` for the rest
+  (no names); a caller who cannot see a dependency cannot move it, so the change waits for someone who can.
 - Nothing is ever deleted from `graph.concepts`.
 
 ### D4. `unclassified` domain
@@ -138,28 +143,36 @@ caller may read. The API response says `restricted_excluded: true` so the limit 
 The migration also adds `operating:kpi` to `tracks-goal.from_types` (it lists `operating:metric`, a type the
 operating cell does not emit).
 
-Cells assert these with the existing `<cell>.<type>.linked` / `.unlinked` events. Ingest changes, in
-`graph.ingest_event_v1` and the unlink path:
+Cells assert catalog relations with a **set** event, `<cell>.<type>.linked` with `payload.relation`,
+`payload.mode = "replace"` and `payload.targets: [<target_ref>, ...]` (the full set for that relation at the subject's
+`payload.version`; an empty list clears it). Other relations keep the existing single `linked` / `unlinked` events.
+Ingest changes, in `graph.ingest_event_v1` and the unlink path:
 
-1. **Canonicalise** a short-form `target_ref` (D1) using the event's `workspace_id`, then `graph.resolve()`.
+1. **Canonicalise** each short-form target (D1) using the event's `workspace_id`, then `graph.resolve()`.
 2. **Target check**, only for the four catalog relations above (targets `platform:domain`, `platform:value`,
    `platform:metric`; `assigned-to` → `platform:identity` and every other relation are unchanged): after resolve,
    the target must be a row in `graph.concepts` / `graph.metric_definitions` of this workspace with the right kind.
    - not found (typo, other workspace) → `rejected_relation`;
    - `active` → stored;
    - `split` or `retired` → for `in-domain` the edge is stored to `unclassified` with
-     `provenance.requested = <original URN>` and outcome `fallback_unclassified`, so items created after a
+     `provenance.requested` listing the original URN(s) and outcome `fallback_unclassified`, so items created after a
      taxonomy change still show in `/v1/catalog/review` (which lists the requested concept) until the cell's
      mapping is updated; for `serves-value`, `measured-by`, `defined-by` → `rejected_relation`.
    A merged concept has already resolved to its active target.
-3. **Unlink after merge:** the unlink path matches edges where `graph.resolve(to_urn)` equals the resolved target
-   (still limited to `asserted_by` = the emitting cell), so an edge stored to A before A merged into B is retracted
-   by an unlink that now resolves to B.
-4. **Ordering by source version.** For the four catalog relations, `graph.edge_versions (workspace_id, from_urn,
-   relation, asserted_by, version)` holds the highest subject `payload.version` applied, whether by `linked` or
-   `unlinked`. A `linked` or `unlinked` event whose version is lower than that is recorded `stale` and changes no
-   edge. So a late `linked(A)` after `unlinked(A)` + `linked(B)` does not bring A back. The backfill emits events
-   with the source row's version read in the same transaction, so a concurrent edit (higher version) wins.
+3. **Replace in one transaction, ordered by source version.** `graph.edge_versions (workspace_id, from_urn,
+   relation, asserted_by, version)` holds the highest subject version applied for that set. A set event with a
+   version not higher than that is recorded `stale` and changes nothing. Otherwise ingest computes the wanted edges
+   (after canonicalise, resolve, target check and fallback), retracts every live edge of that subject/relation/cell
+   that is not wanted, asserts the wanted ones, and stores the version, all in one transaction. Matching compares
+   resolved targets, so an edge stored to A before A merged into B counts as an edge to B; a fallback edge to
+   `unclassified` is kept only while some requested target still falls back (its `provenance.requested` is
+   recomputed), and an edge the cell set to `unclassified` directly is kept while `unclassified` is in the set.
+   Because each event carries the whole set, order does not matter: with A → B at v2 and B → C at v3 delivered
+   v3 first, v3 leaves only C and v2 is `stale`. The backfill emits set events with the source row's version read in
+   the same transaction, so a concurrent edit (higher version) wins.
+4. **Single `unlinked` events for catalog relations** are refused (`rejected_relation`); clearing is an empty set.
+   For other relations the existing unlink path also matches by resolved target, so an edge stored to A before
+   A merged into B is retracted by an unlink that now resolves to B.
 
 ### D6. Metric definitions `graph.metric_definitions`
 
@@ -175,12 +188,12 @@ Cells assert these with the existing `<cell>.<type>.linked` / `.unlinked` events
 | `value_range` | jsonb null | bounds of one **raw** observation, e.g. `{"min": 1, "max": 5}` |
 | `kind` | text | `leading` \| `lagging` \| `guardrail` \| `descriptive` |
 | `objectivity` | text | `objective` \| `subjective` |
-| `source` | jsonb | `{"cell", "resource", "field", "filter", "time_field", "read_permission", "dedupe"}`: where one raw observation is read; `read_permission` is the cell permission that reads it (e.g. `diary.journal-entry:read`); `dedupe` picks one source per period when several write the same metric (`{"by": "day", "field": "source", "prefer": ["apple-health", "telegram-checkin"]}`) |
+| `source` | jsonb | `{"cell", "resource", "field", "filter", "time_field", "dedupe"}`: where one raw observation is read; `(cell, resource)` must be a row of `graph.metric_sources`; `dedupe` picks one source per period when several write the same metric (`{"by": "day", "field": "source", "prefer": ["apple-health", "telegram-checkin"]}`) |
 | `aggregation` | text | how a period is summarised, see D7 |
 | `cadence` | text | `daily` \| `weekly` \| `monthly` \| `event` |
 | `criteria` | jsonb | ordered list `[{"level": "warn", "window": "7d", "op": "<", "value": 6, "action": "…"}]`, compared to the **aggregate** |
 | `target` | jsonb null | `{"window": "7d", "op": ">=", "value": 7}`; null is allowed (a KPI need not have a target) |
-| `classification` | text | defaults to the source resource's classification |
+| `classification` | text | the source's classification from `graph.metric_sources` (below); a writer may raise it, never lower it |
 | `status` | text | `active` \| `retired` (+ `replaced_by` text null) |
 | `version` | int | bumps on any change to scale, aggregation, source, domain, criteria or target |
 
@@ -196,10 +209,14 @@ Cells assert these with the existing `<cell>.<type>.linked` / `.unlinked` events
   is guaranteed: `sum` is `[0, unbounded)` when `value_range.min ≥ 0`, otherwise unbounded; `count` is `[0, unbounded)`.
   So a weekly water target of 14 L passes with `value_range.max = 10` per observation, and a `sum` threshold of 40
   passes with `value_range.min = 20`.
-- `source.cell` must be a known cell; the catalog does not read the cell, it only stores the pointer.
+- `graph.metric_sources (cell, resource, classification, read_permission)` is the trusted register of readable
+  sources. It is written only by migrations (no API, no `tasks_api` write), seeded with
+  `health/health-metrics` (`confidential`, `health.health-metric:read`), `diary/journal-entries` (`restricted`,
+  `diary.journal-entry:read`) and `time/time-logs` (`internal`, `time.time-log:read`). `PUT` refuses a source not in
+  it, copies `read_permission` from it (a writer cannot supply or replace it), and refuses a `classification` lower
+  than the register's. The catalog does not read the cell, it only stores the pointer.
 - `dedupe` is required when the `source.filter` can match more than one writer of the same value (the check-in
   and Apple Health both write `sleep_hours`, `exercise_minutes` and `weight` to `health-metrics`).
-- `read_permission` is required when `classification` is `confidential` or `restricted`.
 - Every write is audited per D2 (hash audit + full revision row).
 
 ### D7b. Who may read a metric definition
@@ -208,8 +225,9 @@ A definition carries owner-written text (description, criteria actions, filters)
 the API, MCP and the lake export follow the source's classification:
 
 - `public` / `internal`: `catalog.metric-definition:read` is enough;
-- `confidential` / `restricted`: the caller also needs `source.read_permission`; otherwise the definition is left out
-  of lists and `GET` returns 404;
+- `confidential` / `restricted`: the caller also needs the register's `read_permission` (and, for a scoped token, that
+  permission in the token's scopes); otherwise the definition is left out of lists and `GET /v1/catalog/metrics/{key}`
+  returns 404;
 - the lake export (rollout step 5) contains only `public` and `internal` definitions.
 
 ### D7a. Relation to the operating cell's `kpi`
@@ -230,6 +248,13 @@ functions `graph.catalog_*` (list, upsert, merge, split, retire, review, version
 migrator, `EXECUTE` granted to `tasks_api` only, each bound to `platform.current_workspace()`. `tasks_api` gets no
 direct table grants; `graph_api` gets `SELECT` for the future graph read API.
 
+**Token scopes first.** `platform.can` and `platform.authorize` do not see JWT scopes, so every catalog route
+first applies the same check as the existing `precheck` in `services/tasks/tasks_api/app.py`: when `caller.scopes`
+is set and does not contain the route's permission, reads return 404 and writes 403 `scope_insufficient`, before
+any database call. The same applies to the source `read_permission` (D7b) and to the cell/type read checks of
+`/v1/catalog/review` (D4): a scoped token sees only what both its scopes and the actor's permissions allow; the route
+passes the token's scopes to the `graph.catalog_*` read functions, which filter with them.
+
 Authorization: reads check `platform.can(actor, <permission>, delegation)`. **Writes** call
 `platform.authorize(actor, workspace, <permission>, 'catalog.concept' | 'catalog.metric-definition', <kind/slug or key>,
 workspace, delegation, on_behalf_of, approval, 'api', p_lock => true)` inside the writing transaction, so workspace
@@ -239,8 +264,9 @@ usual approval-required response unless the request carries a granted `approval_
 Permissions for owners:
 - existing workspaces: the migration adds `catalog.concept:read|write|admin` and
   `catalog.metric-definition:read|write` to each workspace's `owner` role (`platform.role_permissions`);
-- new workspaces: the role map that `platform-identity` passes to `platform.tenancy_signup` as `p_roles` gets the
-  same permissions for `owner` (a change in the `platform-identity` repository, rollout step 1b).
+- new workspaces: `platform.tenancy_signup` itself adds the same permissions to the new `owner` role, idempotently,
+  in the signup transaction (after inserting the roles from `p_roles`). This does not depend on the role map that
+  `platform-identity` sends, so a signup between the migration and any identity deploy still gets them.
 
 Concepts are addressed by `{kind}/{slug}` (domain and value may share a slug):
 
@@ -252,7 +278,8 @@ Concepts are addressed by `{kind}/{slug}` (domain and value may share a slug):
 | `POST /v1/catalog/concepts/{kind}/{slug}/merge` `{into, note}` | `catalog.concept:admin` |
 | `POST /v1/catalog/concepts/{kind}/{slug}/split` `{into: [..], note, metric_moves?}` | `catalog.concept:admin` |
 | `POST /v1/catalog/concepts/{kind}/{slug}/retire` `{note, metric_moves?}` | `catalog.concept:admin` |
-| `GET /v1/catalog/metrics?domain=&kind=` | `catalog.metric-definition:read` |
+| `GET /v1/catalog/metrics?domain=&kind=` | `catalog.metric-definition:read` (+ D7b per row) |
+| `GET /v1/catalog/metrics/{key}` | `catalog.metric-definition:read` (+ D7b; 404 when hidden) |
 | `PUT /v1/catalog/metrics/{key}` | `catalog.metric-definition:write` |
 | `GET /v1/catalog/review` | `catalog.concept:read` + visibility filter (D4) |
 | `GET /v1/catalog/versions` | `catalog.concept:read` |
@@ -318,21 +345,25 @@ goals `tech → skills`, `business → work`, `life → unclassified`, `creative
    `graph.catalog_*` functions and grants (D8), ingest changes (D5), `graph.edge_versions`, owner-role
    permissions for existing workspaces, `graph.catalog_seed` for every workspace, and the `platform.tenancy_signup`
    change. Applied with the migrator URI **before** the merge (cells and platform do not migrate on deploy).
-1b. `platform-identity`: add the catalog permissions to the `owner` role map passed as `p_roles` (its own change and deploy).
 2. Routes + MCP tools in `tasks-api`; shared route registration and contract (D8); `empire-contracts --check`.
 3. **Producers**, so data written after the backfill is classified too:
-   - `life-goals-api` (already emits graph events): emit `goals.goal.linked` `in-domain` from `category`
-     on create and on category change, `unlinked` for the old one.
+   - `life-goals-api` (already emits graph events): emit a set event (`in-domain`, `mode: replace`) from
+     `category` on create and on every category change.
    - `life-time-api` (emits nothing today): enable graph events for `time-log` and emit `in-domain` from `domain`
-     the same way. Enabling events only fills the cell outbox; delivery needs, all in that repository:
-     a publisher token with `graph.time:write` set as `TIME_PUBLISHER_TOKEN` (with `EMPIRE_PLATFORM_URL`) on
-     `time-api` for inline publish, and an outbox sweep (a cron service in `.railway/railway.ts`, like
-     `tasks-publisher`) that re-sends rows whose inline publish failed. Minting the token is an owner action.
-     The check-in worker needs no change: it posts to the time cell, and the cell emits.
+     the same way. Enabling events only fills the cell outbox; delivery needs:
+     - in `platform-empire` (this repository): a `time-publisher` entry in `contracts/automations/v1/automations.json`
+       (like `goals-publisher`) and `graph.time:write` added to `TIME_OWNER` in `src/empire_platform/permissions.py`,
+       so the delegated publisher token can be issued and is allowed to send;
+     - in `life-time-api`: `TIME_PUBLISHER_TOKEN` (with `EMPIRE_PLATFORM_URL`) on `time-api` for inline publish, and
+       an outbox sweep (a cron service in `.railway/railway.ts`) that re-sends rows whose inline publish failed.
+     The publisher (`src/cellkit/publisher.py`) sends only the outbox rows of its token's workspace, so one token
+     covers one workspace. This rollout enables the owner's workspace only; rows of other workspaces stay in that
+     cell's outbox until each gets its own token (a later change, per-workspace tokens). Minting the token is an
+     owner action. The check-in worker needs no change: it posts to the time cell, and the cell emits.
    - Each producer's category/domain → slug mapping lives in that cell; after a split or retire the owner updates it
      (until then new items fall back to `unclassified`, D5).
    Each is its own change in that cell's repository, merged after step 1.
-4. Backfill job: one `in-domain` edge per existing goal and time log from the mapping above (idempotent).
+4. Backfill job: one `in-domain` set event per existing goal and time log from the mapping above, with the row's version (idempotent).
 5. Daily export of `graph.concepts` + `graph.metric_definitions` to the R2 lake so Gold marts join definitions
    (reuse the `data-schedules` cron project; which job carries it is decided at build time).
 6. Follow-ups, each its own spec: goals `category` enum → domain reference; check-in metrics evaluated against
@@ -340,18 +371,18 @@ goals `tech → skills`, `business → work`, `life → unclassified`, `creative
 
 ## Acceptance (tests)
 
-- AC-1 create a domain → registry row + `graph.nodes` row with `cell = platform` and canonical URN; taxonomy version +1 with its note; one revision row; audit event carries the revision id.
+- AC-1 create a domain → registry row + `graph.nodes` row with `cell = platform` and canonical URN; taxonomy version +1 with its note; one revision row whose `audit_event_id` is the id returned by `platform.record_audit`.
 - AC-2 rename a domain → URN and edges unchanged; taxonomy version unchanged; revision row written.
 - AC-3 (database level, the graph read API is out of scope) merge A into B → `graph.aliases` A → B; a new `in-domain` edge to A is stored to B; the catalog read function returns B with `was = [A]` for an edge stored to A.
 - AC-4 merge A into B, then B into C → `graph.resolve(A) = C` and `graph.resolve(B) = C`; merging into a non-active concept → 409.
-- AC-5 an edge to A stored before A merged into B is retracted by an `unlinked` event that targets A or B from the same cell; an unlink from another cell retracts nothing.
+- AC-5 an `in-domain` edge to A stored before A merged into B is retracted by a newer set event from the same cell that no longer contains A or B, and kept by one that contains B; a set event from another cell retracts nothing; for a non-catalog relation, a single `unlinked` targeting the merged URN retracts the old edge.
 - AC-6 split A into B, C → no alias; old edges to A listed by `/v1/catalog/review`; a new `in-domain` link to A → `fallback_unclassified`; a new `serves-value` link to a split value → `rejected_relation`.
 - AC-7 link to a non-existent slug (typo) or to another workspace's concept → `rejected_relation`; `in-domain` to a retired domain → `fallback_unclassified`; existing edges kept.
-- AC-8 short-form `target_ref` `empire:platform:domain:health` is stored as the canonical URN of the event's workspace.
+- AC-8 a short-form target `empire:platform:domain:health` is stored as the canonical URN of the event's workspace.
 - AC-9 two workspaces both seeded: each has its own `unclassified` and `health`; workspace B cannot read or write A's concepts, metrics or revisions (RLS + D8 functions).
 - AC-10 workspace created by `platform.tenancy_signup` after the migration has taxonomy version 1 with all seeded domains and metrics; running `graph.catalog_seed` again inserts nothing.
 - AC-11 `unclassified` refuses merge, split and retire (409).
-- AC-12 retire or split of a domain used by a metric → 409 naming the metric keys; with full `metric_moves` → 200 and metrics moved with `version` +1; merge moves metrics to the target.
+- AC-12 retire or split of a domain used by a metric → 409 naming the metric keys the caller may read and `hidden_dependencies` for the rest; with full `metric_moves` → 200 and metrics moved with `version` +1; merge moves metrics to the target; a `PUT` creating a metric in A started together with retire A ends with either the retire refused or the `PUT` refused, never a metric on a retired domain.
 - AC-13 domain and value with the same slug: `PATCH /v1/catalog/concepts/value/health` changes only the value.
 - AC-14 `serves-value` from `tasks:task` → `rejected_relation` (type not allowed by D5).
 - AC-15 `PUT` metric with `scale = ordinal`, `aggregation = mean` → 422; with `median` → 200; `last` without `source.time_field` → 422; every seeded metric passes `PUT` unchanged.
@@ -361,21 +392,25 @@ goals `tech → skills`, `business → work`, `life → unclassified`, `creative
 - AC-19 version bump writes `unclassified_snapshot` with counts by cell/type only (no labels, no URNs).
 - AC-20 caller without `catalog.concept:admin` gets 403 on merge/split/retire; `tasks_api` has no direct table privilege on catalog tables (only `EXECUTE` on `graph.catalog_*`).
 - AC-21 `empire-contracts --check` fails when a catalog route is removed or its schema changes.
-- AC-22 a goal created through the goals cell API after rollout gets an `in-domain` edge from its category; a time log created through the time cell API (as the check-in worker does) gets one from its `domain`.
+- AC-22 in the owner's (provisioned) workspace, a goal created through the goals cell API after rollout gets an `in-domain` edge from its category; a time log created through the time cell API (as the check-in worker does) gets one from its `domain`. A time log in an unprovisioned workspace stays in the cell outbox (documented limit).
 - AC-23 backfill run twice → second run asserts no new edges.
 - AC-24 `operating:kpi` → `platform:metric` with `defined-by` is stored; `tracks-goal` from `operating:kpi` is accepted.
 - AC-25 a workspace policy with `requires_approval` on `catalog.concept:admin`: merge by a caller holding the permission but no granted approval is refused; with a granted `approval_id` it succeeds.
 - AC-26 signup through `platform.tenancy_signup` as `platform_tenancy` succeeds and seeds the new workspace; `platform_tenancy` cannot select from or write to catalog tables directly; `graph.catalog_seed()` unbound raises.
 - AC-27 a workspace created before the migration is seeded by the migration (test creates it first, then migrates).
-- AC-28 the owner of an existing workspace and of a newly signed-up workspace can call `POST /v1/catalog/concepts` and the merge route (200), not only be refused in negative cases.
+- AC-28 the owner of an existing workspace and of a newly signed-up workspace can call `POST /v1/catalog/concepts` and the merge route (200), including a signup whose `p_roles` has no catalog permission (old identity role map).
 - AC-29 merge A → B and merge B → A started concurrently: one succeeds, the other gets 409; `graph.resolve` of both ends at an active concept.
 - AC-30 `assigned-to` from `tasks:task` to `platform:identity` is accepted exactly as before the migration.
-- AC-31 goal category changed A → B, then a delayed `linked(A)` with the older version arrives → `stale`, no edge to A; a backfill event read before a concurrent edit is `stale` after the edit's event.
+- AC-31 set events: goal at A (v1), A → B (v2), B → C (v3) delivered v1, v3, v2 → only C remains, v2 `stale`; a backfill event read before a concurrent edit is `stale` after the edit's event; a single `unlinked` for `in-domain` → `rejected_relation`.
 - AC-32 after `work` is split, a goal created with category `business` gets an `in-domain` edge to `unclassified` with `provenance.requested` = the `work` URN, and `/v1/catalog/review` lists it under `work`.
 - AC-33 snapshot with a `restricted` edge in `unclassified`: the edge is not counted; the response has `restricted_excluded: true`.
-- AC-34 a caller with `catalog.metric-definition:read` but without `diary.journal-entry:read` gets 404 for `diary.energy` and does not see it in lists; the lake export contains no `confidential`/`restricted` definition.
+- AC-34 a caller with `catalog.metric-definition:read` but without `diary.journal-entry:read` gets 404 from `GET /v1/catalog/metrics/diary.energy` and does not see it in lists; a caller with both gets 200; the lake export contains no `confidential`/`restricted` definition.
 - AC-35 a day with both an Apple Health and a check-in `exercise_minutes` row counts only the Apple Health value in `sum 7d`; a day with only check-in rows sums them.
 - AC-36 a time log created through the time cell API while the platform is unreachable reaches the graph after the outbox sweep runs (AC-22 on retry).
+- AC-37 after split of `work` (item fell back to `unclassified` with `requested = work`), a set event moving the goal to `skills` retracts the fallback edge; an item the cell set to `unclassified` directly keeps its edge.
+- AC-38 `PUT` with a source not in `graph.metric_sources` → 422; `diary.energy` with `classification = internal` → 422; a supplied `read_permission` is ignored and the register's is stored.
+- AC-39 a token whose scopes lack `catalog.concept:read` gets 404 on `GET /v1/catalog/concepts` even though the actor has the permission; a token with `catalog.metric-definition:read` but not `diary.journal-entry:read` in its scopes does not see `diary.energy`; review omits cell types outside the token's scopes.
+- AC-40 `platform-empire` issues a `time-publisher` token with `graph.time:write` for the owner's workspace (automation contract + owner grant).
 
 ## Open questions (owner)
 
