@@ -34,6 +34,9 @@ AUDIENCE_SCOPES = {
         # SPEC-002 catalog reads for the MCP catalog tools (no catalog write or admin by exchange)
         "catalog.concept:read",
         "catalog.metric-definition:read",
+        # catalog.review lists only cell types the token may read (D4); these are the rollout's producers
+        "goals.goal:read",
+        "time.time-log:read",
     ),
     "graph-api": ("graph.query:read",),
 }

@@ -220,6 +220,10 @@ BEGIN
     IF v_decision IS DISTINCT FROM 'allow' THEN
         RETURN jsonb_build_object('status', 403, 'error', coalesce(v_decision, 'deny'), 'reason', v_reason);
     END IF;
+    -- the execution records an approval only when the decision point used it for this request
+    PERFORM set_config('graph.catalog_approval',
+                       CASE WHEN v_reason = 'allowed_with_approval' THEN coalesce(p_caller ->> 'approval', '') ELSE '' END,
+                       true);
     RETURN NULL;
 END
 $$;
@@ -255,7 +259,8 @@ BEGIN
             coalesce((p_caller ->> 'on_behalf_of')::uuid, v_actor), (p_caller ->> 'delegation')::uuid,
             -- only an approval that exists here and was granted; a stray header value is not recorded
             (SELECT a.id FROM platform.approvals a
-             WHERE a.id = (p_caller ->> 'approval')::uuid AND a.workspace_id = platform.current_workspace()
+             WHERE a.id = nullif(current_setting('graph.catalog_approval', true), '')::uuid
+               AND a.id = (p_caller ->> 'approval')::uuid AND a.workspace_id = platform.current_workspace()
                AND a.decision = 'approved'),
             coalesce(p_caller ->> 'channel', 'api'), 'succeeded', now())
     RETURNING id INTO v_id;
@@ -551,6 +556,10 @@ BEGIN
                       WHERE jsonb_typeof(e.value) <> 'string' OR e.value #>> '{}' !~ '\S')
            OR coalesce(v_dedupe ->> 'combine', '') NOT IN ('sum', 'last', 'max') THEN
             PERFORM graph.catalog_fail(422, 'invalid_dedupe');
+        END IF;
+        IF v_reg.writer_field IS NOT NULL AND v_dedupe ->> 'field' IS DISTINCT FROM v_reg.writer_field THEN
+            PERFORM graph.catalog_fail(422, 'dedupe_field_not_writer',
+                                       jsonb_build_object('writer_field', v_reg.writer_field));
         END IF;
         IF v_dedupe ->> 'tz' IS NULL OR NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = v_dedupe ->> 'tz') THEN
             PERFORM graph.catalog_fail(422, 'dedupe_tz_required');
@@ -1384,7 +1393,8 @@ BEGIN
         END IF;
         v_edge_class := CASE WHEN graph.rank(v_want ->> 'class') > graph.rank(v_class) THEN v_want ->> 'class'
                              ELSE v_class END;
-        UPDATE graph.edges SET provenance = v_prov, classification = v_edge_class
+        UPDATE graph.edges SET provenance = v_prov, classification = v_edge_class,
+            execution_id = (p_event ->> 'execution_id')::uuid
         WHERE workspace_id = v_ws AND from_urn = v_subject AND relation = v_relation AND asserted_by = v_parts[1]
           AND retracted_at IS NULL AND graph.resolve(to_urn) = v_key;
         IF NOT FOUND THEN
@@ -1394,7 +1404,7 @@ BEGIN
                     v_prov, (p_event ->> 'execution_id')::uuid)
             ON CONFLICT (workspace_id, from_urn, to_urn, relation, asserted_by)
             DO UPDATE SET retracted_at = NULL, provenance = EXCLUDED.provenance,
-                classification = EXCLUDED.classification, valid_from = now();
+                classification = EXCLUDED.classification, execution_id = EXCLUDED.execution_id, valid_from = now();
         END IF;
     END LOOP;
     INSERT INTO graph.edge_versions (workspace_id, from_urn, relation, asserted_by, version)

@@ -2067,3 +2067,26 @@ def test_filter_pinning_the_writer_needs_no_dedupe(cluster):
         },
     }
     assert put(cluster, ws, "health.sleep_watch", pinned)["version"] == 1
+
+
+def test_kept_edge_carries_the_latest_execution(cluster):
+    ws = seeded(cluster)
+    goal = str(uuid.uuid4())
+    first, second = uuid.uuid4(), uuid.uuid4()
+    for version, execution in ((1, first), (2, second)):
+        evt = set_event(
+            ws,
+            "goals",
+            "goal",
+            goal,
+            "in-domain",
+            ["empire:platform:domain:health"],
+            version,
+        )
+        evt["execution_id"] = str(execution)
+        ingest(cluster, ws, evt)
+    assert su(
+        cluster,
+        "SELECT execution_id FROM graph.edges WHERE from_urn = %s AND retracted_at IS NULL",
+        (f"empire:goals:goal:{goal}",),
+    ) == [(second,)]

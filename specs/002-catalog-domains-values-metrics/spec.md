@@ -256,6 +256,8 @@ Ingest changes, in `graph.ingest_event_v1` and the unlink path:
   (a writer must be able to read what it defines), and the key's prefix must equal `source.cell` (`diary.*` only for
   diary sources). Without the read permission, `PUT` returns 404 whether or not the key exists, before any
   `if_version` check, so writes cannot reveal hidden keys.
+- The register names each source's writer field (`health-metrics`: `source`); `dedupe.field` must be that field, and a
+  filter that pins it selects one writer and needs no `dedupe`.
 - `dedupe` is required when the `source.filter` can match more than one writer of the same value (the check-in
   and Apple Health both write `sleep_hours`, `exercise_minutes` and `weight` to `health-metrics`).
 - Every write is audited per D2 (hash audit + full revision row).

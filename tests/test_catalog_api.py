@@ -586,3 +586,92 @@ def test_time_publisher_needs_the_time_grant_first(cluster):  # AC-40
     )["targets"]
     services = {t["service"] for t in targets if t["automation"] == "time-publisher"}
     assert services == {"time-api", "time-publisher"}
+
+
+# --- step-3 review fixes ----------------------------------------------------------------------------
+
+
+def test_only_the_approval_the_decision_used_is_recorded(cluster, client, auth, ws):
+    with cluster.connect("platform_api") as conn:
+        use_workspace(conn, ws.id)
+        other = new_id(
+            conn
+        )  # approved, but for another action and not needed by this write
+        conn.execute(
+            "INSERT INTO platform.approvals (id, workspace_id, requested_action, approver_identity_id,"
+            " decision, decided_at) VALUES (%s, %s, 'tasks.task:delete', %s, 'approved', now())",
+            (other, ws.id, ws.owner),
+        )
+        conn.commit()
+    made = client.post(
+        "/v1/catalog/concepts",
+        headers={**auth(ws.owner, ws.id), "X-Empire-Approval": str(other)},
+        json={"kind": "value", "slug": "joy", "label": "Joy", "note": "x"},
+    )
+    assert made.status_code == 201, made.text
+    assert su(
+        cluster,
+        "SELECT e.approval_id FROM graph.concept_revisions r JOIN platform.executions e"
+        " ON e.id = r.execution_id WHERE r.urn = %s",
+        (made.json()["urn"],),
+    ) == [(None,)]
+
+
+def test_approval_used_by_the_decision_is_recorded(cluster, client, auth, ws):
+    with cluster.connect("platform_api") as conn:
+        use_workspace(conn, ws.id)
+        conn.execute(
+            "INSERT INTO platform.policies (workspace_id, permission, requires_approval)"
+            " VALUES (%s, 'catalog.concept:write', true)",
+            (ws.id,),
+        )
+        approval = new_id(conn)
+        conn.execute(
+            "INSERT INTO platform.approvals (id, workspace_id, requested_action, approver_identity_id,"
+            " decision, decided_at) VALUES (%s, %s, 'catalog.concept:write', %s, 'approved', now())",
+            (approval, ws.id, ws.owner),
+        )
+        conn.commit()
+    made = client.post(
+        "/v1/catalog/concepts",
+        headers={**auth(ws.owner, ws.id), "X-Empire-Approval": str(approval)},
+        json={"kind": "value", "slug": "calm", "label": "Calm", "note": "x"},
+    )
+    assert made.status_code == 201, made.text
+    assert su(
+        cluster,
+        "SELECT e.approval_id FROM graph.concept_revisions r JOIN platform.executions e"
+        " ON e.id = r.execution_id WHERE r.urn = %s",
+        (made.json()["urn"],),
+    ) == [(approval,)]
+
+
+def test_dedupe_must_split_by_the_writer_field(client, auth, ws):
+    owner = auth(ws.owner, ws.id)
+    current = client.get("/v1/catalog/metrics/health.sleep_hours", headers=owner).json()
+    body = {
+        k: current[k]
+        for k in (
+            "label",
+            "domain",
+            "unit",
+            "scale",
+            "value_range",
+            "kind",
+            "objectivity",
+            "source",
+            "aggregation",
+            "cadence",
+            "criteria",
+            "target",
+        )
+    }
+    body["source"] = {
+        **body["source"],
+        "dedupe": {**body["source"]["dedupe"], "field": "metric_type"},
+    }
+    response = client.put("/v1/catalog/metrics/health.sleep2", headers=owner, json=body)
+    assert (response.status_code, response.json()["detail"]["error"]) == (
+        422,
+        "dedupe_field_not_writer",
+    )
