@@ -1929,6 +1929,9 @@ def test_snapshot_counts_an_entity_once_after_alias_resolution(cluster):
     make(cluster, ws, "aa")
     goal = str(uuid.uuid4())
     ingest(
+        cluster, ws, lifecycle(ws, "goals", "goal", goal)
+    )  # 2009: only subjects with a node count
+    ingest(
         cluster,
         ws,
         set_event(
@@ -2223,3 +2226,51 @@ def test_catalog_edge_is_never_below_its_restricted_subject(cluster):  # D4, 200
         ),
     )
     assert su(cluster, edge, (later,)) == [("restricted",)]
+
+
+def test_set_event_before_the_restricted_subject_is_raised_on_create(
+    cluster,
+):  # AC-41, 2009
+    ws = seeded(cluster)
+    goal = str(uuid.uuid4())
+    edge = (
+        "SELECT classification FROM graph.edges WHERE from_urn = %s"
+        " AND relation = 'in-domain' AND retracted_at IS NULL"
+    )
+    target = ["empire:platform:domain:health"]
+    ingest(cluster, ws, set_event(ws, "goals", "goal", goal, "in-domain", target, 1))
+    assert su(cluster, edge, (f"empire:goals:goal:{goal}",)) == [("internal",)]
+    ingest(
+        cluster, ws, lifecycle(ws, "goals", "goal", goal, classification="restricted")
+    )
+    assert su(cluster, edge, (f"empire:goals:goal:{goal}",)) == [("restricted",)]
+
+
+def test_snapshot_skips_unclassified_links_without_a_subject_node(cluster):  # D4, 2009
+    ws = seeded(cluster)
+    goal = str(uuid.uuid4())
+    target = ["empire:platform:domain:unclassified"]
+    ingest(cluster, ws, set_event(ws, "goals", "goal", goal, "in-domain", target, 1))
+    [(snapshot,)] = su(cluster, "SELECT graph.unclassified_snapshot(%s)", (ws.id,))
+    assert snapshot == []
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal))
+    [(snapshot,)] = su(cluster, "SELECT graph.unclassified_snapshot(%s)", (ws.id,))
+    assert snapshot == [
+        {"cell": "goals", "type": "goal", "classification": "internal", "count": 1}
+    ]
+
+
+def test_dedupe_combine_follows_the_scale(cluster):  # D7, 2009
+    ws = seeded(cluster)
+    sleep = metric_body(cluster, ws, "health.sleep_hours")
+    source = {
+        **sleep["source"],
+        "dedupe": {**sleep["source"]["dedupe"], "combine": "sum"},
+    }
+    ordinal = {**sleep, "scale": "ordinal", "aggregation": "median", "source": source}
+    assert code_of(lambda: put(cluster, ws, "health.s2", ordinal)) == (
+        422,
+        "combine_not_allowed",
+    )
+    ratio = {**sleep, "source": source}
+    assert put(cluster, ws, "health.s3", ratio)["version"] == 1
