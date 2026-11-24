@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import uuid
 
+import psycopg
 import pytest
 from conftest import create_workspace
 from fastapi.testclient import TestClient
@@ -352,3 +353,38 @@ def test_crm_audiences_only_for_the_named_automations():
         pass
     else:
         raise AssertionError("a non opt-in audience must be refused")
+
+
+def test_full_provision_skips_a_publisher_the_owner_cannot_grant_yet(cluster, capsys):
+    # SPEC-002: a workspace from before the rollout has no graph.time:write until
+    # `empire-cells grant --cell time`; the other automations still provision.
+    perms = [
+        p for perms in CELL_OWNERS.values() for p in perms if p != "graph.time:write"
+    ]
+    with cluster.connect("platform_api") as conn:
+        ws = create_workspace(conn, f"pre-{uuid.uuid4().hex[:8]}", perms)
+        conn.commit()
+    items = provision(cluster, ws.id)
+    names = {i.automation for i in items}
+    assert "time-publisher" not in names
+    assert "goals-publisher" in names
+    assert "time-publisher" in capsys.readouterr().err
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        provision(cluster, ws.id, only={"time-publisher"})
+
+
+def test_only_the_grantor_refusal_is_skipped():
+    from empire_platform.automations import _grantor_refused
+
+    class Diag:
+        def __init__(self, message):
+            self.message_primary = message
+
+    class Exc:
+        def __init__(self, message):
+            self.diag = Diag(message)
+
+    assert _grantor_refused(
+        Exc("delegation scope graph.time:write exceeds the grantor's permissions")
+    )
+    assert not _grantor_refused(Exc("permission denied for table delegations"))
