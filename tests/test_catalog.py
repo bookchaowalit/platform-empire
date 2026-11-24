@@ -2274,3 +2274,36 @@ def test_dedupe_combine_follows_the_scale(cluster):  # D7, 2009
     )
     ratio = {**sleep, "source": source}
     assert put(cluster, ws, "health.s3", ratio)["version"] == 1
+
+
+def test_a_split_target_cannot_leave_active(cluster):  # D2, 2010
+    ws = seeded(cluster)
+    make(cluster, ws, "aa", "bb", "cc", "dd", "ee")
+    cat(
+        cluster,
+        ws.id,
+        "catalog_split",
+        caller(ws.owner),
+        "domain",
+        "aa",
+        ["bb", "cc"],
+        "split",
+        None,
+    )
+    attempts = (
+        ("catalog_merge", "bb", "cc", "collapse"),
+        ("catalog_retire", "bb", "retire", None),
+        ("catalog_split", "bb", ["dd", "ee"], "resplit", None),
+    )
+    for fn, *args in attempts:
+        with pytest.raises(CatalogError) as err:
+            cat(cluster, ws.id, fn, caller(ws.owner), "domain", *args)
+        assert (err.value.status, err.value.code) == (409, "replacement_target")
+        assert err.value.detail == {"replaces": ["aa"]}
+    split = {
+        c["slug"]: c
+        for c in cat(
+            cluster, ws.id, "catalog_list_concepts", caller(ws.owner), "domain", "split"
+        )
+    }
+    assert [r["slug"] for r in split["aa"]["replaced_by"]] == ["bb", "cc"]
