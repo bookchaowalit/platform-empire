@@ -7,6 +7,8 @@
 --    time cannot each miss the other's row.
 -- 2. D4 snapshot: an in-domain edge to unclassified whose subject has no node yet (or a deleted one) is not
 --    counted; its class is not known until the node arrives, and a stored count is never corrected.
+-- 4. Tenancy: node URNs carry no workspace, so every node lookup here (and the 2008 edge floor) only reads
+--    nodes of the edge's own workspace; another workspace's node never sets this workspace's classes.
 -- 3. D7: `dedupe.combine` folds the writers of one day before the aggregate, so it must be an aggregation the
 --    metric's scale allows (no `sum` of ordinal scores). Checked with the same rule as `aggregation`.
 
@@ -42,7 +44,7 @@ CREATE OR REPLACE FUNCTION graph.unclassified_snapshot(p_ws uuid) RETURNS jsonb 
                    CASE WHEN graph.rank(n.classification) > graph.rank(e.classification) THEN n.classification
                         ELSE e.classification END AS classification
             FROM graph.edges e
-            JOIN graph.nodes n ON n.urn = e.from_urn AND n.lifecycle <> 'deleted'
+            JOIN graph.nodes n ON n.urn = e.from_urn AND n.workspace_id = p_ws AND n.lifecycle <> 'deleted'
             WHERE e.workspace_id = p_ws AND e.relation = 'in-domain' AND e.retracted_at IS NULL
               AND graph.resolve(e.to_urn) = graph.concept_urn(p_ws, 'domain', 'unclassified')
             ORDER BY e.from_urn, graph.rank(e.classification) DESC
@@ -80,3 +82,20 @@ DROP TRIGGER metric_definitions_dedupe_guard ON graph.metric_definitions;
 CREATE TRIGGER metric_definitions_dedupe_guard
     BEFORE INSERT OR UPDATE OF source, scale ON graph.metric_definitions
     FOR EACH ROW EXECUTE FUNCTION graph.metric_dedupe_guard();
+
+CREATE OR REPLACE FUNCTION graph.catalog_edge_floor() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+    v_class text;
+BEGIN
+    FOR v_class IN SELECT n.classification FROM graph.nodes n
+                   WHERE n.workspace_id = NEW.workspace_id AND n.urn IN (NEW.from_urn, NEW.to_urn) LOOP
+        IF graph.rank(v_class) > graph.rank(NEW.classification) THEN
+            NEW.classification := v_class;
+        END IF;
+    END LOOP;
+    RETURN NEW;
+END
+$$;
