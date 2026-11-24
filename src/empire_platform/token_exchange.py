@@ -70,6 +70,10 @@ class TokenExchanger:
             raise ExchangeRefused("invalid subject token") from exc
         allowed = AUDIENCE_SCOPES[audience]
         granted = tuple(s for s in (scopes or allowed) if s in allowed)
+        if "scope" in claims:
+            # a subject token signed with a scope claim keeps it: the exchange only narrows
+            held = set(str(claims["scope"]).split())
+            granted = tuple(s for s in granted if s in held)
         if not granted:
             raise ExchangeRefused("no requested scope is available for this audience")
         now = int(time.time())
