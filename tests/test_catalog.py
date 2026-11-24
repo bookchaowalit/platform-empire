@@ -2154,3 +2154,72 @@ def test_raising_a_metric_raises_its_existing_edges(cluster):  # D7b, 2007
     assert su(cluster, edge, (subject,)) == [("internal",)]
     put(cluster, ws, m["key"], {**m, "classification": "restricted"}, m["version"])
     assert su(cluster, edge, (subject,)) == [("restricted",)]
+
+
+def test_replaced_by_names_the_current_target_after_chained_merges(
+    cluster,
+):  # D2-D3, 2008
+    ws = seeded(cluster)
+    make(cluster, ws, "aa", "bb", "cc")
+    for source, into in (("aa", "bb"), ("bb", "cc")):
+        cat(
+            cluster,
+            ws.id,
+            "catalog_merge",
+            caller(ws.owner),
+            "domain",
+            source,
+            into,
+            "chain",
+        )
+    merged = {
+        c["slug"]: c
+        for c in cat(
+            cluster,
+            ws.id,
+            "catalog_list_concepts",
+            caller(ws.owner),
+            "domain",
+            "merged",
+        )
+    }
+    assert [r["slug"] for r in merged["aa"]["replaced_by"]] == ["cc"]
+    assert [r["slug"] for r in merged["bb"]["replaced_by"]] == ["cc"]
+
+
+def test_catalog_edge_is_never_below_its_restricted_subject(cluster):  # D4, 2008
+    ws = seeded(cluster)
+    goal = str(uuid.uuid4())
+    subject = f"empire:goals:goal:{goal}"
+    edge = (
+        "SELECT classification FROM graph.edges WHERE from_urn = %s"
+        " AND relation = 'in-domain' AND retracted_at IS NULL"
+    )
+    target = ["empire:platform:domain:health"]
+    ingest(
+        cluster, ws, lifecycle(ws, "goals", "goal", goal, classification="restricted")
+    )
+    ingest(cluster, ws, set_event(ws, "goals", "goal", goal, "in-domain", target, 1))
+    assert su(cluster, edge, (subject,)) == [("restricted",)]
+    assert cat(cluster, ws.id, "catalog_review", caller(ws.owner))["items"] == []
+
+    # a later lifecycle event that raises the subject raises its catalog edge too
+    other = str(uuid.uuid4())
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", other))
+    ingest(cluster, ws, set_event(ws, "goals", "goal", other, "in-domain", target, 1))
+    later = f"empire:goals:goal:{other}"
+    assert su(cluster, edge, (later,)) == [("internal",)]
+    ingest(
+        cluster,
+        ws,
+        lifecycle(
+            ws,
+            "goals",
+            "goal",
+            other,
+            verb="updated",
+            version=2,
+            classification="restricted",
+        ),
+    )
+    assert su(cluster, edge, (later,)) == [("restricted",)]
