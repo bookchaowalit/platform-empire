@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal
 import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi import Path as Path_
+from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,6 +24,22 @@ from tasks_api.auth import Principal
 
 SLUG = r"^[a-z][a-z0-9-]{1,40}$"
 KEY = r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9_]*$"
+# The graph.catalog_* functions the routes call; run() refuses any other name before it builds SQL.
+CATALOG_FUNCTIONS = frozenset(
+    {
+        "catalog_create_concept",
+        "catalog_get_metric",
+        "catalog_list_concepts",
+        "catalog_list_metrics",
+        "catalog_merge",
+        "catalog_put_metric",
+        "catalog_retire",
+        "catalog_review",
+        "catalog_split",
+        "catalog_update_concept",
+        "catalog_versions",
+    }
+)
 Kind = Literal["domain", "value"]
 
 
@@ -267,13 +284,16 @@ def register_catalog(
             conn.close()
 
     def run(caller: Principal, function: str, *args: Any) -> Any:
-        placeholders = ", ".join(["%s"] * len(args))
+        if function not in CATALOG_FUNCTIONS:
+            raise ValueError(f"not a catalog function: {function}")
+        query = sql.SQL("SELECT graph.{}({})").format(
+            sql.Identifier(function),
+            sql.SQL(", ").join(sql.Placeholder() * len(args)),
+        )
         with bound(caller) as conn:
             try:
-                row = conn.execute(
-                    f"SELECT graph.{function}({placeholders})",  # nosemgrep: fixed names only
-                    args,
-                ).fetchone()
+                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- composed with psycopg sql.Identifier from CATALOG_FUNCTIONS; every value is a bound parameter
+                row = conn.execute(query, args).fetchone()
             except psycopg.Error as exc:
                 conn.rollback()
                 state = exc.sqlstate or ""

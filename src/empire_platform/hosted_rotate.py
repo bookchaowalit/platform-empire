@@ -547,9 +547,23 @@ def run(
         try:
             tokens.update(mint([name]))
         except Exception as exc:  # noqa: BLE001 - reported per automation; its targets fail below
-            emit({"action": "mint", "automation": name, "ok": False, "error": describe_error(exc)})
+            emit(
+                {
+                    "action": "mint",
+                    "automation": name,
+                    "ok": False,
+                    "error": describe_error(exc),
+                }
+            )
         except SystemExit:
-            emit({"action": "mint", "automation": name, "ok": False, "error": "provisioning failed"})
+            emit(
+                {
+                    "action": "mint",
+                    "automation": name,
+                    "ok": False,
+                    "error": "provisioning failed",
+                }
+            )
     failures = skipped
     vercel_projects: list[str] = []
     for target in targets:
