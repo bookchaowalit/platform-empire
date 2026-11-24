@@ -805,7 +805,7 @@ def put(cluster, ws, key, body, if_version=None, who=None):
 
 
 def time_metric(**changes: Any) -> dict[str, Any]:
-    body = {
+    body: dict[str, Any] = {
         "label": "Deep work",
         "domain": "work",
         "unit": "min",
@@ -2119,3 +2119,38 @@ def test_neighbors_follow_merged_concepts(cluster):
         ).fetchall()
     assert from_goal == [(urn(ws, "domain", "bb"),)]
     assert from_bb == [(f"empire:goals:goal:{goal}", "in")]
+
+
+def test_dedupe_refused_on_a_source_without_a_writer_field(cluster):  # D7, 2007
+    ws = seeded(cluster)
+    body = time_metric()
+    body["source"]["dedupe"] = {
+        "by": "day",
+        "tz": "Asia/Bangkok",
+        "field": "domain",
+        "prefer": ["check-in"],
+        "combine": "sum",
+    }
+    assert code_of(lambda: put(cluster, ws, "time.deduped", body)) == (
+        422,
+        "dedupe_field_not_writer",
+    )
+
+
+def test_raising_a_metric_raises_its_existing_edges(cluster):  # D7b, 2007
+    ws = seeded(cluster)
+    m = metric_body(cluster, ws, "time.learning_minutes")
+    metric = f"empire:platform:metric:{ws.id}:{m['key']}"
+    goal = str(uuid.uuid4())
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal))
+    ingest(
+        cluster, ws, set_event(ws, "goals", "goal", goal, "measured-by", [metric], 1)
+    )
+    edge = (
+        "SELECT classification FROM graph.edges WHERE from_urn = %s"
+        " AND relation = 'measured-by' AND retracted_at IS NULL"
+    )
+    subject = f"empire:goals:goal:{goal}"
+    assert su(cluster, edge, (subject,)) == [("internal",)]
+    put(cluster, ws, m["key"], {**m, "classification": "restricted"}, m["version"])
+    assert su(cluster, edge, (subject,)) == [("restricted",)]

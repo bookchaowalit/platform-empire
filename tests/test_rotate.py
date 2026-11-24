@@ -128,7 +128,7 @@ def test_rotation_mints_then_pushes_every_target_and_deploys_vercel_once(
     due = rotate.due_automations(targets, tokens, checkouts, 10, run, NOW)
     failures = rotate.rotate(targets, due, tokens, checkouts, mint, run, dry_run=False)
     assert failures == 0
-    assert minted == [["goals-publisher", "solo-web"]]
+    assert minted == [["goals-publisher"], ["solo-web"]]
     pushes = [
         c
         for c in run.calls
@@ -209,3 +209,31 @@ def test_railway_copy_with_its_own_project_is_left_to_the_hosted_rotation():
     assert not any(t.automation == "hiring-radar" for t in local)
     [radar] = [t for t in hosted if t.automation == "hiring-radar"]
     assert (radar.project, radar.service) == ("data-schedules", "hiring-radar")
+
+
+def test_one_refused_mint_does_not_stop_the_others(tmp_path, capsys):
+    # SPEC-002: time-publisher is refused until `empire-cells grant --cell time`; the rest still rotate
+    targets, tokens, checkouts = setup(tmp_path, int(NOW) + 2 * rotate.DAY)
+    new_exp = int(NOW) + 30 * rotate.DAY
+
+    def mint(names):
+        if names == ["goals-publisher"]:
+            raise SystemExit("provisioning failed")
+        for name in names:
+            (tokens / f"{name}.jwt").write_text(jwt(new_exp))
+
+    run = FakeRun()
+    due = rotate.due_automations(targets, tokens, checkouts, 10, run, NOW)
+    failures = rotate.rotate(targets, due, tokens, checkouts, mint, run, dry_run=False)
+    assert failures == 1
+    pushes = [
+        c
+        for c in run.calls
+        if "--set-from-stdin" in c[0] or c[0][:3] == ["vercel", "env", "add"]
+    ]
+    assert pushes
+    assert all("GOALS_PUBLISHER_TOKEN" not in " ".join(c[0]) for c in pushes)
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert {"action": "mint", "automation": "goals-publisher", "ok": False} in [
+        {k: e.get(k) for k in ("action", "automation", "ok")} for e in events
+    ]

@@ -254,11 +254,28 @@ def rotate(
                     }
                 )
         return 0
-    mint(sorted(due))
+    # One automation per mint, as in hosted_rotate: a delegation the owner cannot grant yet (for example
+    # time-publisher before `empire-cells grant --cell time`) fails only that automation (SPEC-002).
     failures = 0
+    minted: set[str] = set()
+    for name in sorted(due):
+        try:
+            mint([name])
+        except (Exception, SystemExit):  # noqa: BLE001 - reported per automation, its targets are skipped
+            failures += 1
+            emit(
+                {
+                    "action": "mint",
+                    "automation": name,
+                    "ok": False,
+                    "error": "provisioning failed",
+                }
+            )
+            continue
+        minted.add(name)
     vercel_checkouts: list[str] = []
     for target in targets:
-        if target.automation not in due:
+        if target.automation not in minted:
             continue
         token = read_token_file(tokens, target.automation)
         cwd = checkouts / target.checkout
