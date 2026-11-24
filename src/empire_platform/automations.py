@@ -75,6 +75,14 @@ def extra_audiences(registry: dict | None = None) -> dict[str, tuple[str, ...]]:
     return extras
 
 
+def _grantor_refused(exc: psycopg.Error) -> bool:
+    """The delegation trigger's refusal (0002): a scope the grantor does not hold."""
+    message = exc.diag.message_primary or ""
+    return message.startswith("delegation scope ") and message.endswith(
+        "exceeds the grantor's permissions"
+    )
+
+
 def _provision_one(
     conn: psycopg.Connection[DictRow],
     workspace_id: uuid.UUID,
@@ -192,8 +200,9 @@ def provision(
                     result = _provision_one(conn, workspace_id, owner, automation, days)
             except psycopg.errors.InsufficientPrivilege as exc:
                 # SPEC-002: a publisher the owner cannot grant yet (time-publisher before
-                # `empire-cells grant --cell time`) is skipped in a full run; --only still fails.
-                if only is not None:
+                # `empire-cells grant --cell time`) is skipped in a full run; --only still fails,
+                # and so does every other privilege error (a broken database grant is not skipped).
+                if only is not None or not _grantor_refused(exc):
                     raise
                 print(
                     f"{automation['id']:20} skipped  {exc.diag.message_primary}",

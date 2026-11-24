@@ -371,3 +371,20 @@ def test_full_provision_skips_a_publisher_the_owner_cannot_grant_yet(cluster, ca
     assert "time-publisher" in capsys.readouterr().err
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         provision(cluster, ws.id, only={"time-publisher"})
+
+
+def test_only_the_grantor_refusal_is_skipped():
+    from empire_platform.automations import _grantor_refused
+
+    class Diag:
+        def __init__(self, message):
+            self.message_primary = message
+
+    class Exc:
+        def __init__(self, message):
+            self.diag = Diag(message)
+
+    assert _grantor_refused(
+        Exc("delegation scope graph.time:write exceeds the grantor's permissions")
+    )
+    assert not _grantor_refused(Exc("permission denied for table delegations"))

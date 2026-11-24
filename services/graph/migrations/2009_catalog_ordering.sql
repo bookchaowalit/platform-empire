@@ -172,9 +172,11 @@ END
 $$;
 
 -- Repair existing catalog edges once (the edges_catalog_floor trigger computes the class). Both tables FORCE RLS
--- and the migrator binds no workspace, so lift FORCE for this statement only (same transaction).
-ALTER TABLE graph.edges NO FORCE ROW LEVEL SECURITY;
+-- and the migrator binds no workspace, so lift FORCE for this statement only (same transaction). Locks are
+-- taken nodes first, then edges: the order every ingest path uses, so a concurrent event waits, never deadlocks.
+LOCK TABLE graph.nodes, graph.edges IN ACCESS EXCLUSIVE MODE;
 ALTER TABLE graph.nodes NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE graph.edges NO FORCE ROW LEVEL SECURITY;
 UPDATE graph.edges SET classification = classification WHERE relation = ANY (graph.catalog_relations());
 ALTER TABLE graph.edges FORCE ROW LEVEL SECURITY;
 ALTER TABLE graph.nodes FORCE ROW LEVEL SECURITY;
