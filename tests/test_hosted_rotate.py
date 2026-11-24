@@ -434,3 +434,42 @@ def test_railway_projects_query_names_the_workspace():
     assert "projects(workspaceId: $w)" in seen[0]["query"]
     assert seen[0]["variables"] == {"w": hr.RAILWAY_WORKSPACE_ID}
     assert seen[1]["variables"] == {"w": "ws-2"}
+
+
+def test_one_refused_mint_does_not_stop_the_others(capsys):
+    """SPEC-002: time-publisher can be due before `empire-cells grant --cell time`; the rest still rotate."""
+    recorder = Recorder(_jwt(time.time()))
+    client = httpx.Client(transport=httpx.MockTransport(recorder))
+    apis = hr.build_apis({"RAILWAY_API_TOKEN": "r"}, client)
+    targets = [
+        TARGETS[0],
+        hr.HostedTarget(
+            "time-publisher",
+            "railway",
+            "TIME_PUBLISHER_TOKEN",
+            "life-time-api",
+            "time-api",
+        ),
+    ]
+
+    def mint(names):
+        if names == ["time-publisher"]:
+            raise RuntimeError(
+                "delegation scope graph.time:write exceeds the grantor's permissions"
+            )
+        return dict.fromkeys(names, "a.b.c")
+
+    failures = hr.run(
+        targets,
+        {"goals-publisher": "forced", "time-publisher": "forced"},
+        mint,
+        apis,
+        False,
+    )
+    assert failures == 1
+    out = capsys.readouterr().out
+    events = [json.loads(line) for line in out.splitlines()]
+    pushes = {e["automation"]: e["ok"] for e in events if e["action"] == "push"}
+    assert pushes == {"goals-publisher": True, "time-publisher": False}
+    refused = [e for e in events if e["action"] == "mint" and e.get("ok") is False]
+    assert [e["automation"] for e in refused] == ["time-publisher"]

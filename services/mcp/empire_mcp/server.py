@@ -69,6 +69,23 @@ class SearchArgs(Strict):
     limit: int = Field(default=20, ge=1, le=200)
 
 
+class ConceptsArgs(Strict):
+    kind: Literal["domain", "value"] | None = None
+    status: Literal["active", "merged", "split", "retired"] | None = None
+
+
+class MetricsArgs(Strict):
+    key: str | None = Field(
+        default=None, pattern=r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9_]*$", max_length=80
+    )
+    domain: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{1,40}$")
+    kind: Literal["leading", "lagging", "guardrail", "descriptive"] | None = None
+
+
+class NoArgs(Strict):
+    pass
+
+
 class NeighborsArgs(Strict):
     urn: str = Field(pattern=URN)
     limit: int = Field(default=50, ge=1, le=500)
@@ -253,6 +270,37 @@ def build_server(
                 "target_ref": target_ref,
             },
         )
+
+    # SPEC-002 catalog: read only (no write or admin tool), served by the tasks API.
+    @tool(
+        "catalog.concepts",
+        ConceptsArgs,
+        "List the workspace's life domains and values.",
+    )
+    def catalog_concepts(kind: str | None = None, status: str | None = None) -> dict:
+        params = {k: v for k, v in {"kind": kind, "status": status}.items() if v}
+        return call(tasks, "GET", "/v1/catalog/concepts", params=params)
+
+    @tool(
+        "catalog.metrics",
+        MetricsArgs,
+        "Metric definitions the caller may read (one by key, or filtered by domain/kind).",
+    )
+    def catalog_metrics(
+        key: str | None = None, domain: str | None = None, kind: str | None = None
+    ) -> dict:
+        if key:
+            return call(tasks, "GET", f"/v1/catalog/metrics/{key}")
+        params = {k: v for k, v in {"domain": domain, "kind": kind}.items() if v}
+        return call(tasks, "GET", "/v1/catalog/metrics", params=params)
+
+    @tool(
+        "catalog.review",
+        NoArgs,
+        "Entities still unclassified or linked to a split concept, counted by cell and type.",
+    )
+    def catalog_review() -> dict:
+        return call(tasks, "GET", "/v1/catalog/review")
 
     if graph is None:
         return server

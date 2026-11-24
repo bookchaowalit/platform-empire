@@ -44,6 +44,7 @@ from tasks_api.auth import (
     TokenVerifier,
     Unauthenticated,
 )
+from tasks_api.catalog import register_catalog
 
 Status = Literal["todo", "in_progress", "done", "blocked", "cancelled"]
 Relation = Literal["supports-goal", "belongs-to", "related-to", "depends-on", "part-of"]
@@ -1856,6 +1857,9 @@ def create_app(
                 (include_inactive,),
             ).fetchall()
         return TaskTypeList(items=[TaskType(**row) for row in rows])
+
+    # SPEC-002: catalog routes share this app, role and verifier, so the contract includes them.
+    register_catalog(app, connect, principal)
 
     return app
 

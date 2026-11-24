@@ -540,7 +540,30 @@ def run(
                 }
             )
     mintable = sorted(set(due) - unreachable)
-    tokens = mint(mintable) if mintable else {}
+    # One automation per mint: a delegation the owner cannot grant yet (for example time-publisher before
+    # `empire-cells grant --cell time`) fails only that automation, not the whole rotation (SPEC-002).
+    tokens: dict[str, str] = {}
+    for name in mintable:
+        try:
+            tokens.update(mint([name]))
+        except Exception as exc:  # noqa: BLE001 - reported per automation; its targets fail below
+            emit(
+                {
+                    "action": "mint",
+                    "automation": name,
+                    "ok": False,
+                    "error": describe_error(exc),
+                }
+            )
+        except SystemExit:
+            emit(
+                {
+                    "action": "mint",
+                    "automation": name,
+                    "ok": False,
+                    "error": "provisioning failed",
+                }
+            )
     failures = skipped
     vercel_projects: list[str] = []
     for target in targets:

@@ -250,6 +250,7 @@ TIME_OWNER = (
     "time.time-log:read",
     "time.time-log:write",
     "time.time-log:delete",
+    "graph.time:write",  # SPEC-002: time logs publish in-domain set events (time-publisher)
 )
 
 RADAR_OWNER = (
@@ -314,6 +315,17 @@ CELL_OWNERS.update(
     health=HEALTH_OWNER,
     time=TIME_OWNER,
 )
+
+# SPEC-002 catalog (platform-owned vocabulary). Migration 2006 and tenancy_signup grant these to every owner
+# role; ``empire-cells grant --cell catalog`` repairs a role that lost them.
+CATALOG_OWNER = (
+    "catalog.concept:read",
+    "catalog.concept:write",
+    "catalog.concept:admin",
+    "catalog.metric-definition:read",
+    "catalog.metric-definition:write",
+)
+CELL_OWNERS["catalog"] = CATALOG_OWNER
 
 # Finance, split into ten cells on 2026-10-12 (one repository, API, Neon project and MCP each).
 FINANCE_OWNERS: dict[str, tuple[str, ...]] = {
