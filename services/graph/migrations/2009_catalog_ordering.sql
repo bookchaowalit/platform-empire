@@ -7,10 +7,10 @@
 --    time cannot each miss the other's row.
 -- 2. D4 snapshot: an in-domain edge to unclassified whose subject has no node yet (or a deleted one) is not
 --    counted; its class is not known until the node arrives, and a stored count is never corrected.
--- 4. Tenancy: node URNs carry no workspace, so every node lookup here (and the 2008 edge floor) only reads
---    nodes of the edge's own workspace; another workspace's node never sets this workspace's classes.
 -- 3. D7: `dedupe.combine` folds the writers of one day before the aggregate, so it must be an aggregation the
 --    metric's scale allows (no `sum` of ordinal scores). Checked with the same rule as `aggregation`.
+-- 4. Tenancy: node URNs carry no workspace, so every node lookup here (and the 2008 edge floor) only reads
+--    nodes of the edge's own workspace; another workspace's node never sets this workspace's classes.
 
 CREATE OR REPLACE FUNCTION graph.catalog_node_raise_edges() RETURNS trigger
 LANGUAGE plpgsql
