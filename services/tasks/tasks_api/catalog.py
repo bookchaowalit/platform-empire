@@ -174,6 +174,8 @@ class MetricPut(Strict):
     status: Literal["active", "retired"] = "active"
     replaced_by: str | None = Field(default=None, pattern=KEY)
     if_version: int | None = Field(default=None, ge=1, le=2_147_483_647)
+    # AC-38: a supplied read_permission is accepted and ignored; the register's is stored
+    read_permission: str | None = Field(default=None, max_length=200)
 
 
 class ReviewConcept(BaseModel):
@@ -506,7 +508,9 @@ def register_catalog(
         caller: Caller, key: KeyPath, body: MetricPut, approval: Approval = None
     ) -> Any:
         scoped(caller, "catalog.metric-definition:write", read=False)
-        definition = body.model_dump(exclude={"if_version"}, exclude_none=False)
+        definition = body.model_dump(
+            exclude={"if_version", "read_permission"}, exclude_none=False
+        )
         if definition["classification"] is None:
             del definition[
                 "classification"

@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+import psycopg
 from psycopg.rows import DictRow, dict_row
 
 from empire_platform.devdb import (
@@ -74,6 +75,85 @@ def extra_audiences(registry: dict | None = None) -> dict[str, tuple[str, ...]]:
     return extras
 
 
+def _provision_one(
+    conn: psycopg.Connection[DictRow],
+    workspace_id: uuid.UUID,
+    owner: uuid.UUID,
+    automation: dict,
+    days: int,
+) -> Provisioned:
+    subject = f"automation:{workspace_id}:{automation['id']}"
+    scopes = tuple(sorted(automation["scopes"]))
+    row = conn.execute(
+        "SELECT id FROM platform.identities WHERE external_subject = %s",
+        (subject,),
+    ).fetchone()
+    if row is None:
+        # A SELECT without FROM always yields one row.
+        identity = cast(
+            DictRow, conn.execute("SELECT platform.uuid_v7() AS id").fetchone()
+        )["id"]
+        conn.execute(
+            "INSERT INTO platform.identities (id, kind, display_name, external_subject)"
+            " VALUES (%s, 'automation', %s, %s)",
+            (identity, automation["id"], subject),
+        )
+        conn.execute(
+            "INSERT INTO platform.memberships (workspace_id, identity_id) VALUES (%s, %s)",
+            (workspace_id, identity),
+        )
+    else:
+        identity = row["id"]
+    current = conn.execute(
+        "SELECT id, scopes::text[] AS scopes, expires_at FROM platform.delegations"
+        " WHERE grantee_identity_id = %s AND grantor_identity_id = %s AND revoked_at IS NULL"
+        " ORDER BY created_at DESC LIMIT 1",
+        (identity, owner),
+    ).fetchone()
+    now = datetime.now(UTC)
+    if (
+        current
+        and tuple(sorted(current["scopes"])) == scopes
+        and current["expires_at"] - now > RENEW_BEFORE
+    ):
+        return Provisioned(
+            automation["id"],
+            identity,
+            current["id"],
+            owner,
+            scopes,
+            False,
+            current["expires_at"],
+        )
+    conn.execute(
+        "UPDATE platform.delegations SET revoked_at = now() WHERE grantee_identity_id = %s"
+        " AND revoked_at IS NULL",
+        (identity,),
+    )
+    # A SELECT without FROM always yields one row; so does INSERT ... RETURNING.
+    delegation = cast(
+        DictRow, conn.execute("SELECT platform.uuid_v7() AS id").fetchone()
+    )["id"]
+    expires_at = cast(
+        DictRow,
+        conn.execute(
+            "INSERT INTO platform.delegations (id, workspace_id, grantor_identity_id, grantee_identity_id, scopes,"
+            " expires_at) VALUES (%s, %s, %s, %s, %s::platform.permission[], now() + make_interval(days => %s))"
+            " RETURNING expires_at",
+            (delegation, workspace_id, owner, identity, list(scopes), days),
+        ).fetchone(),
+    )["expires_at"]
+    return Provisioned(
+        automation["id"],
+        identity,
+        delegation,
+        owner,
+        scopes,
+        True,
+        expires_at,
+    )
+
+
 def provision(
     cluster: AnyCluster,
     workspace_id: uuid.UUID,
@@ -105,81 +185,22 @@ def provision(
         for automation in registry["automations"]:
             if only is not None and automation["id"] not in only:
                 continue
-            subject = f"automation:{workspace_id}:{automation['id']}"
-            scopes = tuple(sorted(automation["scopes"]))
-            row = conn.execute(
-                "SELECT id FROM platform.identities WHERE external_subject = %s",
-                (subject,),
-            ).fetchone()
-            if row is None:
-                # A SELECT without FROM always yields one row.
-                identity = cast(
-                    DictRow, conn.execute("SELECT platform.uuid_v7() AS id").fetchone()
-                )["id"]
-                conn.execute(
-                    "INSERT INTO platform.identities (id, kind, display_name, external_subject)"
-                    " VALUES (%s, 'automation', %s, %s)",
-                    (identity, automation["id"], subject),
-                )
-                conn.execute(
-                    "INSERT INTO platform.memberships (workspace_id, identity_id) VALUES (%s, %s)",
-                    (workspace_id, identity),
-                )
-            else:
-                identity = row["id"]
-            current = conn.execute(
-                "SELECT id, scopes::text[] AS scopes, expires_at FROM platform.delegations"
-                " WHERE grantee_identity_id = %s AND grantor_identity_id = %s AND revoked_at IS NULL"
-                " ORDER BY created_at DESC LIMIT 1",
-                (identity, owner),
-            ).fetchone()
-            now = datetime.now(UTC)
-            if (
-                current
-                and tuple(sorted(current["scopes"])) == scopes
-                and current["expires_at"] - now > RENEW_BEFORE
-            ):
-                results.append(
-                    Provisioned(
-                        automation["id"],
-                        identity,
-                        current["id"],
-                        owner,
-                        scopes,
-                        False,
-                        current["expires_at"],
-                    )
+            try:
+                with (
+                    conn.transaction()
+                ):  # a savepoint: a refused delegation undoes only this automation
+                    result = _provision_one(conn, workspace_id, owner, automation, days)
+            except psycopg.errors.InsufficientPrivilege as exc:
+                # SPEC-002: a publisher the owner cannot grant yet (time-publisher before
+                # `empire-cells grant --cell time`) is skipped in a full run; --only still fails.
+                if only is not None:
+                    raise
+                print(
+                    f"{automation['id']:20} skipped  {exc.diag.message_primary}",
+                    file=sys.stderr,
                 )
                 continue
-            conn.execute(
-                "UPDATE platform.delegations SET revoked_at = now() WHERE grantee_identity_id = %s"
-                " AND revoked_at IS NULL",
-                (identity,),
-            )
-            # A SELECT without FROM always yields one row; so does INSERT ... RETURNING.
-            delegation = cast(
-                DictRow, conn.execute("SELECT platform.uuid_v7() AS id").fetchone()
-            )["id"]
-            expires_at = cast(
-                DictRow,
-                conn.execute(
-                    "INSERT INTO platform.delegations (id, workspace_id, grantor_identity_id, grantee_identity_id, scopes,"
-                    " expires_at) VALUES (%s, %s, %s, %s, %s::platform.permission[], now() + make_interval(days => %s))"
-                    " RETURNING expires_at",
-                    (delegation, workspace_id, owner, identity, list(scopes), days),
-                ).fetchone(),
-            )["expires_at"]
-            results.append(
-                Provisioned(
-                    automation["id"],
-                    identity,
-                    delegation,
-                    owner,
-                    scopes,
-                    True,
-                    expires_at,
-                )
-            )
+            results.append(result)
         conn.commit()
     return results
 

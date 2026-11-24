@@ -1133,6 +1133,18 @@
             "title": "Objectivity",
             "type": "string"
           },
+          "read_permission": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read Permission"
+          },
           "replaced_by": {
             "anyOf": [
               {

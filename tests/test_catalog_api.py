@@ -208,6 +208,17 @@ def test_metric_put_over_http(client, auth, ws):  # AC-15, AC-17, AC-51
     )
     assert same.status_code == 200, same.text
     assert same.json()["version"] == current["version"]
+    ignored = client.put(  # AC-38: a supplied read_permission is ignored
+        "/v1/catalog/metrics/time.work_minutes",
+        headers=owner,
+        json={
+            **body,
+            "read_permission": "goals.goal:read",
+            "if_version": current["version"],
+        },
+    )
+    assert ignored.status_code == 200, ignored.text
+    assert ignored.json()["read_permission"] == current["read_permission"]
     bad = client.put(
         "/v1/catalog/metrics/time.work_minutes",
         headers=owner,
