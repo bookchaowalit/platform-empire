@@ -197,3 +197,25 @@ def test_catalog_review_through_the_exchange_sees_goals(
         for label in item["recent_labels"]
     ]
     assert "Unsorted goal" in labels
+
+
+def test_a_scoped_subject_token_keeps_its_scopes(gkeys, gworld, exchanger):
+    private_pem, _ = gkeys
+    claims = jwt.decode(
+        mint(
+            private_pem,
+            sub=gworld.owner,
+            ws=gworld.ws,
+            issuer=ISSUER,
+            audience="empire-mcp",
+        ),
+        options={"verify_signature": False},
+    )
+    claims["scope"] = "tasks.task:read catalog.concept:read"
+    scoped = jwt.encode(claims, private_pem, algorithm="RS256")
+    granted = jwt.decode(
+        exchanger.exchange(scoped, "tasks-api"), options={"verify_signature": False}
+    )["scope"].split()
+    assert sorted(granted) == ["catalog.concept:read", "tasks.task:read"]
+    with pytest.raises(ExchangeRefused):
+        exchanger.exchange(scoped, "tasks-api", ("goals.goal:read",))
