@@ -1715,6 +1715,47 @@ def test_a_reimported_set_that_beats_its_created_still_lands(cluster):
     ) == [("active",)]
 
 
+def test_a_late_delete_keeps_the_reimported_set(cluster):
+    """2013: the old incarnation's .deleted arriving after the re-import's set keeps that set's link."""
+    ws = seeded(cluster)
+    goal = "503"
+    subject = f"empire:goals:goal:{goal}"
+    work = ["empire:platform:domain:work"]
+    health = ["empire:platform:domain:health"]
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal))
+    ingest(cluster, ws, set_event(ws, "goals", "goal", goal, "in-domain", work, 1))
+    # re-imported at version 4 (tombstone 3); its set arrives before the old delete
+    assert (
+        ingest(
+            cluster, ws, set_event(ws, "goals", "goal", goal, "in-domain", health, 4)
+        )
+        == "edges"
+    )
+    assert (
+        ingest(
+            cluster, ws, lifecycle(ws, "goals", "goal", goal, verb="deleted", version=3)
+        )
+        == "deleted"
+    )
+    assert (
+        ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal, version=4)) == "node"
+    )
+    assert [row[0] for row in live_edges(cluster, subject)] == [
+        f"empire:platform:domain:{ws.id}:health"
+    ]
+    assert su(
+        cluster, "SELECT lifecycle FROM graph.nodes WHERE urn = %s", (subject,)
+    ) == [("active",)]
+    # an ordinary delete still retracts the subject's links
+    other = "504"
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", other))
+    ingest(cluster, ws, set_event(ws, "goals", "goal", other, "in-domain", work, 1))
+    ingest(
+        cluster, ws, lifecycle(ws, "goals", "goal", other, verb="deleted", version=2)
+    )
+    assert live_edges(cluster, f"empire:goals:goal:{other}") == []
+
+
 def test_kept_edge_takes_the_new_sets_classification(cluster):
     ws = seeded(cluster)
     goal = str(uuid.uuid4())
