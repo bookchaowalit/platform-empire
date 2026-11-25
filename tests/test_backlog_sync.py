@@ -712,7 +712,7 @@ def test_code_search_is_paced_across_every_owner_client():
         slept.append(seconds)
         now[0] += seconds
 
-    pace = sync.CodeSearchPace(interval=6.0, clock=lambda: now[0], sleep=sleep)
+    pace = sync.SearchPace(interval=6.0, clock=lambda: now[0], sleep=sleep)
     pace()  # the first search never waits
     now[0] += 1.0
     pace()  # 1 s later: waits the other 5 s
@@ -738,3 +738,29 @@ def test_code_search_is_paced_across_every_owner_client():
     )
     # one shared pace for both owners' tokens: the quota is per GitHub account
     assert len(calls) == len(searches) == 2 * len(sync.FILE_KINDS)
+
+
+def test_one_owner_listed_twice_with_different_tokens_is_refused():
+    with pytest.raises(
+        ValueError, match=r"^BACKLOG_SYNC_GITHUB_TOKENS lists owner org twice$"
+    ):
+        sync.owner_tokens(["org"], default="", mapping="Org=sekrit-1,org=sekrit-2")
+    # the same token twice is harmless
+    assert sync.owner_tokens(["org"], default="", mapping="Org=t,org=t") == {"org": "t"}
+
+
+def test_issue_search_is_paced_across_every_owner_client():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": []})
+
+    calls = []
+    sync.collect(
+        ["github"],
+        {"a": mock(handler), "b": mock(handler)},
+        None,
+        ["a", "b"],
+        "o",
+        sync.Report(),
+        issue_pace=lambda: calls.append(1),
+    )
+    assert len(calls) == 4  # open + closed for each of the two owner groups

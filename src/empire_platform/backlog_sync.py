@@ -174,7 +174,10 @@ def trusted(issue: Mapping[str, Any], bot_repos: Iterable[str]) -> bool:
 
 
 def github_issues(
-    gh: httpx.Client, owners: Iterable[str], bot_repos: Iterable[str] = ()
+    gh: httpx.Client,
+    owners: Iterable[str],
+    bot_repos: Iterable[str] = (),
+    pace: Callable[[], None] = lambda: None,
 ) -> Iterator[Mapping[str, Any]]:
     """Open issues, and issues closed in the last 30 days, labelled autopilot or backlog."""
     users = " ".join(f"user:{o}" for o in owners)
@@ -185,6 +188,7 @@ def github_issues(
     ):
         query = f"is:issue {state} label:autopilot,backlog {users}"
         for page in range(1, 11):  # the search API returns at most 1,000 results
+            pace()
             response = gh.get(
                 "/search/issues", params={"q": query, "per_page": 100, "page": page}
             )
@@ -372,10 +376,12 @@ def _is_template(path: str, markdown: str) -> bool:
 # account. With one token per org the files source makes 2 searches per owner group (26 for
 # 13 owners), so searches are spaced across all clients; 13 owners add about 3 minutes.
 CODE_SEARCH_INTERVAL_SECONDS = 60 / 9
+# Issue search allows 30 a minute per account: 2+ searches per owner group (26+ for 13).
+ISSUE_SEARCH_INTERVAL_SECONDS = 60 / 28
 
 
-class CodeSearchPace:
-    """Waits so consecutive code searches start at least ``interval`` seconds apart."""
+class SearchPace:
+    """Waits so consecutive searches start at least ``interval`` seconds apart."""
 
     def __init__(
         self,
@@ -617,7 +623,10 @@ def owner_tokens(owners: Iterable[str], default: str, mapping: str) -> dict[str,
             raise ValueError(
                 f"BACKLOG_SYNC_GITHUB_TOKENS entry {number} is not owner=token"
             )
-        specific[owner.strip().lower()] = token.strip()  # GitHub owners ignore case
+        key, token = owner.strip().lower(), token.strip()  # GitHub owners ignore case
+        if specific.get(key, token) != token:  # names the owner, never a token
+            raise ValueError(f"BACKLOG_SYNC_GITHUB_TOKENS lists owner {key} twice")
+        specific[key] = token
     owners = list(owners)
     if not owners:
         raise ValueError("no GitHub owners configured")
@@ -651,6 +660,7 @@ def collect(
     report: Report,
     bot_repos: Iterable[str] = (),
     pace: Callable[[], None] | None = None,
+    issue_pace: Callable[[], None] | None = None,
 ) -> list[Item]:
     """Read every source. A source (or one owner group of a GitHub source) that fails is
     logged and skipped; the rest still sync."""
@@ -660,14 +670,19 @@ def collect(
         return client
 
     groups = owner_groups(gh, owners)
-    search_pace = pace or CodeSearchPace()  # one pace for every owner group
+    # one pace per search API for every owner group: the quotas are per GitHub account
+    search_pace = pace or SearchPace()
+    issues_pace = issue_pace or SearchPace(ISSUE_SEARCH_INTERVAL_SECONDS)
     assert groups or not ({"github", "files"} & set(sources))
     Part = tuple[str | None, Callable[[], Iterable[Item]]]
 
     def github_part(group: list[str], client: httpx.Client) -> Part:
         return (
             ",".join(group),
-            lambda: (github_item(i) for i in github_issues(client, group, bot_repos)),
+            lambda: (
+                github_item(i)
+                for i in github_issues(client, group, bot_repos, issues_pace)
+            ),
         )
 
     def files_part(group: list[str], client: httpx.Client) -> Part:
