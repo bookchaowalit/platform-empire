@@ -476,3 +476,39 @@ def test_graph_and_publisher_roles_are_least_privilege(cluster):
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 with conn.transaction():
                     conn.execute(statement)
+
+
+def test_a_scoped_token_needs_the_source_scope_for_protected_metrics(
+    cluster, apps, gkeys
+):
+    """SPEC-002 D7b through the graph read API (2011): graph.query:read alone shows no protected metric."""
+    import jwt
+    from graph_world import ISSUER
+    from test_catalog import seeded, urn
+
+    ws = seeded(cluster)
+    _, graph = apps
+    private_pem, _ = gkeys
+
+    def scoped(*scopes: str) -> dict[str, str]:
+        now = int(time.time())
+        claims = {
+            "iss": ISSUER,
+            "aud": "graph-api",
+            "sub": str(ws.owner),
+            "ws": str(ws.id),
+            "iat": now,
+            "exp": now + 300,
+            "jti": str(uuid.uuid4()),
+            "scope": " ".join(scopes),
+        }
+        return bearer(jwt.encode(claims, private_pem, algorithm="RS256"))
+
+    def found(headers: dict[str, str]) -> set[str]:
+        response = graph.get("/v1/graph/search", params={"q": "นอน"}, headers=headers)
+        assert response.status_code == 200, response.text
+        return {item["urn"] for item in response.json()["items"]}
+
+    sleep = urn(ws, "metric", "health.sleep_hours")
+    assert sleep not in found(scoped("graph.query:read"))
+    assert sleep in found(scoped("graph.query:read", "health.health-metric:read"))
