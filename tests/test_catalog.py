@@ -1654,6 +1654,36 @@ def test_refused_write_keeps_its_decision_record(cluster):
     ) == [("deny", "no_permission")]
 
 
+def test_a_reimport_above_the_tombstone_revives_the_subject_and_its_set(cluster):
+    """platform-cellkit 1.1.11: a legacy id imported again after a delete starts above the tombstone."""
+    ws = seeded(cluster)
+    goal = "501"
+    subject = f"empire:goals:goal:{goal}"
+    work = ["empire:platform:domain:work"]
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal))
+    ingest(cluster, ws, set_event(ws, "goals", "goal", goal, "in-domain", work, 1))
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal, verb="deleted", version=2))
+    assert live_edges(cluster, subject) == []
+    # a re-import at version 1 (before 1.1.11) stays deleted and loses its set
+    assert ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal)) == "stale"
+    stale = set_event(ws, "goals", "goal", goal, "in-domain", work, 1)
+    assert ingest(cluster, ws, stale) == "stale"
+    # the kit now starts it above the tombstone: the node comes back, then its set lands
+    assert (
+        ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal, version=3)) == "node"
+    )
+    assert (
+        ingest(cluster, ws, set_event(ws, "goals", "goal", goal, "in-domain", work, 3))
+        == "edges"
+    )
+    assert [row[0] for row in live_edges(cluster, subject)] == [
+        f"empire:platform:domain:{ws.id}:work"
+    ]
+    assert su(
+        cluster, "SELECT lifecycle FROM graph.nodes WHERE urn = %s", (subject,)
+    ) == [("active",)]
+
+
 def test_kept_edge_takes_the_new_sets_classification(cluster):
     ws = seeded(cluster)
     goal = str(uuid.uuid4())
