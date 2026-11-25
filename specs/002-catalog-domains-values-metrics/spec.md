@@ -273,6 +273,8 @@ minimum and its `read_permission`), so a definition raised above its source is p
   permission in the token's scopes); otherwise the definition is left out of lists and `GET /v1/catalog/metrics/{key}`
   returns 404;
 - the lake export (rollout step 5) contains only `public` and `internal` definitions.
+- the graph read API (`/v1/graph/search`, `/v1/graph/neighbors`) applies the same rule to metric nodes: for a scoped
+  token a protected metric node also needs the register's `read_permission` in the token's scopes (migration 2011).
 
 ### D7a. Relation to the operating cell's `kpi`
 

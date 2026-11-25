@@ -1,7 +1,8 @@
 """Graph read API: permission-aware neighbors and search, and consent grants.
 
 Every hop is filtered by the caller's permissions (and delegation) through
-``platform.can``; anything the caller may not read is absent, including from
+``platform.can``, and for a scoped token a protected metric definition node also needs its source's read
+permission in the token's scopes (SPEC-002 D7b, migration 2011); anything the caller may not read is absent, including from
 counts. A start node the caller cannot see returns an empty result, the same
 as an unknown URN.
 """
@@ -76,6 +77,10 @@ def create_app(
 
     Caller = Annotated[Principal, Depends(scoped)]
 
+    def token_scopes(caller: Principal) -> list[str] | None:
+        """A scoped token's scopes (NULL = unscoped): protected metric nodes also need the source scope (D7b)."""
+        return None if caller.scopes is None else sorted(caller.scopes)
+
     @contextmanager
     def bound(caller: Principal) -> Iterator[psycopg.Connection[DictRow]]:
         conn = connect()
@@ -98,8 +103,8 @@ def create_app(
     ) -> Neighbors:
         with bound(caller) as conn:
             rows = conn.execute(
-                "SELECT * FROM graph.neighbors(%s, %s, %s, %s)",
-                (urn, caller.actor, caller.delegation, limit),
+                "SELECT * FROM graph.neighbors(%s, %s, %s, %s, %s::text[])",
+                (urn, caller.actor, caller.delegation, limit, token_scopes(caller)),
             ).fetchall()
         return Neighbors(urn=urn, items=[Neighbor(**row) for row in rows])
 
@@ -111,8 +116,8 @@ def create_app(
     ) -> Nodes:
         with bound(caller) as conn:
             rows = conn.execute(
-                "SELECT * FROM graph.search(%s, %s, %s, %s)",
-                (q, caller.actor, caller.delegation, limit),
+                "SELECT * FROM graph.search(%s, %s, %s, %s, %s::text[])",
+                (q, caller.actor, caller.delegation, limit, token_scopes(caller)),
             ).fetchall()
         return Nodes(items=[Node(**row) for row in rows])
 

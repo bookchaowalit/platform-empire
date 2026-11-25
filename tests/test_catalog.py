@@ -2039,6 +2039,46 @@ def test_graph_reads_hide_protected_metric_nodes(cluster):
         )
 
 
+def test_graph_reads_need_the_source_scope_for_protected_metrics(cluster):  # D7b, 2011
+    """A scoped token sees a protected metric node only with the source's read permission in its scopes."""
+    ws = seeded(cluster)
+    sleep = urn(ws, "metric", "health.sleep_hours")
+    with cluster.connect("graph_api") as conn:
+        use_workspace(conn, ws.id)
+
+        def visible(key, scopes):
+            return conn.execute(
+                "SELECT graph.node_visible(%s, %s, NULL, %s::text[])",
+                (urn(ws, "metric", key), ws.owner, scopes),
+            ).fetchone()[0]
+
+        def found(scopes):
+            return {
+                row[0]
+                for row in conn.execute(
+                    "SELECT urn FROM graph.search('นอน', %s, NULL, 50, %s::text[])",
+                    (ws.owner, scopes),
+                )
+            }
+
+        graph_only = ["graph.query:read"]
+        with_source = [*graph_only, "health.health-metric:read"]
+        assert (
+            visible("health.sleep_hours", None) is True
+        )  # unscoped caller: identity only
+        assert visible("health.sleep_hours", graph_only) is False
+        assert visible("health.sleep_hours", with_source) is True
+        assert (
+            visible("time.work_minutes", graph_only) is True
+        )  # internal: catalog read is enough
+        assert sleep not in found(graph_only)
+        assert sleep in found(with_source)
+        # the older signatures keep the unscoped behaviour
+        assert conn.execute(
+            "SELECT graph.node_visible(%s, %s, NULL)", (sleep, ws.owner)
+        ).fetchone()[0]
+
+
 def test_set_event_needs_a_valid_subject_urn(cluster):
     ws = seeded(cluster)
     evt = set_event(
