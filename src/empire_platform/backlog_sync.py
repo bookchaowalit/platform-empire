@@ -368,11 +368,41 @@ def _is_template(path: str, markdown: str) -> bool:
     )
 
 
+# GitHub code search allows 10 requests a minute per account, shared by every PAT of that
+# account. With one token per org the files source makes 2 searches per owner group (26 for
+# 13 owners), so searches are spaced across all clients; 13 owners add about 3 minutes.
+CODE_SEARCH_INTERVAL_SECONDS = 60 / 9
+
+
+class CodeSearchPace:
+    """Waits so consecutive code searches start at least ``interval`` seconds apart."""
+
+    def __init__(
+        self,
+        interval: float = CODE_SEARCH_INTERVAL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.interval, self.clock, self.sleep = interval, clock, sleep
+        self.last: float | None = None
+
+    def __call__(self) -> None:
+        if self.last is not None:
+            wait = self.last + self.interval - self.clock()
+            if wait > 0:
+                self.sleep(wait)
+        self.last = self.clock()
+
+
 def file_items(
-    gh: httpx.Client, owners: Iterable[str], report: Report
+    gh: httpx.Client,
+    owners: Iterable[str],
+    report: Report,
+    pace: Callable[[], None] = lambda: None,
 ) -> Iterator[Item]:
     users = " ".join(f"user:{o}" for o in owners)
     for kind, (terms, parse) in FILE_KINDS.items():
+        pace()
         response = gh.get(
             "/search/code",
             params={"q": f"{terms} extension:md {users}", "per_page": 100},
@@ -587,8 +617,11 @@ def owner_tokens(owners: Iterable[str], default: str, mapping: str) -> dict[str,
             raise ValueError(
                 f"BACKLOG_SYNC_GITHUB_TOKENS entry {number} is not owner=token"
             )
-        specific[owner.strip()] = token.strip()
-    tokens = {o: specific.get(o, default.strip()) for o in owners}
+        specific[owner.strip().lower()] = token.strip()  # GitHub owners ignore case
+    owners = list(owners)
+    if not owners:
+        raise ValueError("no GitHub owners configured")
+    tokens = {o: specific.get(o.lower(), default.strip()) for o in owners}
     if missing := [o for o, t in tokens.items() if not t]:
         raise ValueError(f"no GitHub token for owner(s): {', '.join(missing)}")
     return tokens
@@ -617,6 +650,7 @@ def collect(
     org: str,
     report: Report,
     bot_repos: Iterable[str] = (),
+    pace: Callable[[], None] | None = None,
 ) -> list[Item]:
     """Read every source. A source (or one owner group of a GitHub source) that fails is
     logged and skipped; the rest still sync."""
@@ -626,6 +660,7 @@ def collect(
         return client
 
     groups = owner_groups(gh, owners)
+    search_pace = pace or CodeSearchPace()  # one pace for every owner group
     assert groups or not ({"github", "files"} & set(sources))
     Part = tuple[str | None, Callable[[], Iterable[Item]]]
 
@@ -636,7 +671,7 @@ def collect(
         )
 
     def files_part(group: list[str], client: httpx.Client) -> Part:
-        return ",".join(group), lambda: file_items(client, group, report)
+        return ",".join(group), lambda: file_items(client, group, report, search_pace)
 
     readers: dict[str, Callable[[], list[Part]]] = {
         "github": lambda: [github_part(g, c) for g, c in groups],
@@ -650,7 +685,7 @@ def collect(
         found: list[Item] = []
         for scope, read in readers[source]():
             try:
-                found.extend(read())
+                part = list(read())  # a group that fails midway adds nothing
             except (
                 httpx.HTTPError
             ) as exc:  # a source that is down is skipped, not fatal
@@ -668,6 +703,8 @@ def collect(
                     kind=type(exc).__name__,
                     status=status,
                 )
+                continue
+            found.extend(part)
         report.log("source", source=source, items=len(found))
         items.extend(found)
     return items

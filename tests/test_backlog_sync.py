@@ -675,3 +675,66 @@ def test_main_reports_an_owner_without_a_token_as_missing_config(capsys):
     assert out["error"] == "missing_config"
     assert out["detail"] == "no GitHub token for owner(s): b"
     assert "sekrit" not in json.dumps(out)
+
+
+def test_owner_names_match_tokens_case_insensitively():
+    tokens = sync.owner_tokens(
+        ["BookChaowalit-Website"], default="", mapping="bookchaowalit-website=w"
+    )
+    assert tokens == {"BookChaowalit-Website": "w"}
+
+
+def test_no_github_owners_is_missing_config_not_a_crash(capsys):
+    with pytest.raises(ValueError, match=r"^no GitHub owners configured$"):
+        sync.owner_tokens([], default="d", mapping="")
+    env = {"BACKLOG_SYNC_GITHUB_OWNERS": " , ", "BACKLOG_SYNC_GITHUB_TOKEN": "d"}
+    assert sync.main(["--dry-run", "--sources", "github"], env=env) == 2
+    assert json.loads(capsys.readouterr().out)["error"] == "missing_config"
+
+
+def test_a_group_that_fails_midway_contributes_no_items():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if int(request.url.params["page"]) == 1:
+            return httpx.Response(200, json={"items": [issue(n) for n in range(100)]})
+        return httpx.Response(502)
+
+    report = sync.Report()
+    items = sync.collect(["github"], mock(handler), None, ["a"], "o", report)
+    assert items == []  # page 1 was read, page 2 failed: the whole group is skipped
+    assert report.counts["errors"] == 1
+
+
+def test_code_search_is_paced_across_every_owner_client():
+    now = [0.0]
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        now[0] += seconds
+
+    pace = sync.CodeSearchPace(interval=6.0, clock=lambda: now[0], sleep=sleep)
+    pace()  # the first search never waits
+    now[0] += 1.0
+    pace()  # 1 s later: waits the other 5 s
+    now[0] += 10.0
+    pace()  # past the interval: no wait
+    assert slept == [5.0]
+
+    searches = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        searches.append(request.url.path)
+        return httpx.Response(200, json={"items": []})
+
+    calls = []
+    sync.collect(
+        ["files"],
+        {"a": mock(handler), "b": mock(handler)},
+        None,
+        ["a", "b"],
+        "o",
+        sync.Report(),
+        pace=lambda: calls.append(1),
+    )
+    # one shared pace for both owners' tokens: the quota is per GitHub account
+    assert len(calls) == len(searches) == 2 * len(sync.FILE_KINDS)
