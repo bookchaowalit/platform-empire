@@ -41,6 +41,7 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
 | `EMPIRE_TASKS_API_URL` | same as `recurring-gen` |
 | `BACKLOG_SYNC_TOKEN` | minted for automation `backlog-sync` (owner action), then renewed by `token-rotate` once the target below is in `contracts/automations/v1/deployments.json` |
 | `BACKLOG_SYNC_GITHUB_TOKEN` | fine-grained PAT, read-only Issues + Contents + Metadata on every owner org (owner action) |
+| `BACKLOG_SYNC_GITHUB_TOKENS` | `owner=token,owner=token`: one fine-grained PAT per org, because a fine-grained PAT covers a single resource owner. Read-only Issues + Contents + Metadata, all repositories of that owner. Owners without an entry use `BACKLOG_SYNC_GITHUB_TOKEN`; an owner with neither stops the run with `missing_config` (exit 2). Source values: Infisical `/github` `BACKLOG_SYNC_GITHUB_TOKEN_<ORG>` (owner action) |
 | `BACKLOG_SYNC_GITHUB_OWNERS` | `bookchaowalit` plus every `bookchaowalit-*` org; never `Happy-Teeth` |
 | `BACKLOG_SYNC_BOT_REPOS` | repos that run the autopilot (default `bookchaowalit-website/productivity-tracking-web`); add one when Wave 6 adds a repo |
 | `SENTRY_AUTH_TOKEN` | Infisical `/sentry` (reads issues; checked 2026-10-23) |
@@ -86,6 +87,12 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
   each other org): a fine-grained PAT owned by the user cannot read org-private repos, so their issues
   are not synced. To include them, create a PAT with each org as resource owner (the org must allow
   fine-grained tokens) or install a GitHub App on the orgs.
+- **2026-11-25: PAT expired, then org lifetime policy.** The 2026-10-25 PAT expired on 2026-11-24
+  (24 hourly runs `errors=2`: `github` and `files` 401). The replacement (no expiry) read
+  `bookchaowalit` but every `bookchaowalit-website` repo answered 403: *"organization forbids access via
+  a fine-grained personal access token if the token's lifetime is greater than 366 days"*. Give every
+  PAT here an expiry of at most 366 days. `BACKLOG_SYNC_GITHUB_TOKENS` (per-owner tokens) now lets each
+  org get its own PAT, which is also the way to reach org-private repos (see above).
 - Rollback: delete the Railway service `backlog-sync` (the tasks stay in tasks-api), or remove
   `tasks.task:write` by revoking the delegation (`platform.delegations.revoked_at`).
 

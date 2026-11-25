@@ -26,7 +26,10 @@ every item as ``would_upsert``. One failing source or item is logged and skipped
 exit code is 1 when anything failed, 2 when configuration is missing.
 
 Environment (nothing secret is printed):
-    BACKLOG_SYNC_GITHUB_TOKEN   read-only issues + contents + code search on the owners
+    BACKLOG_SYNC_GITHUB_TOKEN   read-only issues + contents + code search; the default
+                                token for every owner without its own entry below
+    BACKLOG_SYNC_GITHUB_TOKENS  comma list of owner=token (a fine-grained PAT covers one
+                                owner, so each org gets its own read-only token)
     BACKLOG_SYNC_GITHUB_OWNERS  comma list (default: bookchaowalit)
     BACKLOG_SYNC_BOT_REPOS      repos whose github-actions[bot] issues count (autopilot repos)
     SENTRY_AUTH_TOKEN, SENTRY_ORG (default personal-yu0)
@@ -567,39 +570,104 @@ def apply(
 # --- run -------------------------------------------------------------------------------
 
 
+GitHub = httpx.Client | Mapping[str, httpx.Client]
+
+
+def owner_tokens(owners: Iterable[str], default: str, mapping: str) -> dict[str, str]:
+    """The GitHub token for each owner: its own ``owner=token`` entry, else the default.
+
+    Raises ValueError for a malformed entry or an owner left without a token; the message
+    never carries a token value.
+    """
+    specific: dict[str, str] = {}
+    entries = [e for e in mapping.split(",") if e.strip()]
+    for number, entry in enumerate(entries, start=1):
+        owner, sep, token = entry.partition("=")
+        if not sep or not owner.strip() or not token.strip():
+            raise ValueError(
+                f"BACKLOG_SYNC_GITHUB_TOKENS entry {number} is not owner=token"
+            )
+        specific[owner.strip()] = token.strip()
+    tokens = {o: specific.get(o, default.strip()) for o in owners}
+    if missing := [o for o, t in tokens.items() if not t]:
+        raise ValueError(f"no GitHub token for owner(s): {', '.join(missing)}")
+    return tokens
+
+
+def owner_groups(
+    gh: GitHub | None, owners: Iterable[str]
+) -> list[tuple[list[str], httpx.Client]]:
+    """Owners grouped by the client (token) that reads them, in owner order."""
+    if gh is None:
+        return []
+    if isinstance(gh, httpx.Client):
+        return [(list(owners), gh)]
+    groups: dict[int, tuple[list[str], httpx.Client]] = {}
+    for owner in owners:
+        client = gh[owner]
+        groups.setdefault(id(client), ([], client))[0].append(owner)
+    return list(groups.values())
+
+
 def collect(
     sources: Iterable[str],
-    gh: httpx.Client | None,
+    gh: GitHub | None,
     sentry: httpx.Client | None,
     owners: list[str],
     org: str,
     report: Report,
     bot_repos: Iterable[str] = (),
 ) -> list[Item]:
+    """Read every source. A source (or one owner group of a GitHub source) that fails is
+    logged and skipped; the rest still sync."""
+
     def need(client: httpx.Client | None) -> httpx.Client:
         assert client is not None  # main() refuses to start without the token
         return client
 
-    readers: dict[str, Callable[[], Iterable[Item]]] = {
-        "github": lambda: (
-            github_item(i) for i in github_issues(need(gh), owners, bot_repos)
-        ),
-        "sentry": lambda: (sentry_item(i) for i in sentry_issues(need(sentry), org)),
-        "files": lambda: file_items(need(gh), owners, report),
+    groups = owner_groups(gh, owners)
+    assert groups or not ({"github", "files"} & set(sources))
+    Part = tuple[str | None, Callable[[], Iterable[Item]]]
+
+    def github_part(group: list[str], client: httpx.Client) -> Part:
+        return (
+            ",".join(group),
+            lambda: (github_item(i) for i in github_issues(client, group, bot_repos)),
+        )
+
+    def files_part(group: list[str], client: httpx.Client) -> Part:
+        return ",".join(group), lambda: file_items(client, group, report)
+
+    readers: dict[str, Callable[[], list[Part]]] = {
+        "github": lambda: [github_part(g, c) for g, c in groups],
+        "sentry": lambda: [
+            (None, lambda: (sentry_item(i) for i in sentry_issues(need(sentry), org)))
+        ],
+        "files": lambda: [files_part(g, c) for g, c in groups],
     }
     items: list[Item] = []
     for source in sources:
-        try:
-            found = list(readers[source]())
-        except httpx.HTTPError as exc:  # a source that is down is skipped, not fatal
-            capture(exc)
-            status = (
-                exc.response.status_code
-                if isinstance(exc, httpx.HTTPStatusError)
-                else None
-            )
-            report.log("error", source=source, kind=type(exc).__name__, status=status)
-            continue
+        found: list[Item] = []
+        for scope, read in readers[source]():
+            try:
+                found.extend(read())
+            except (
+                httpx.HTTPError
+            ) as exc:  # a source that is down is skipped, not fatal
+                capture(exc)
+                status = (
+                    exc.response.status_code
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else None
+                )
+                where = {} if scope is None else {"owners": scope}
+                report.log(
+                    "error",
+                    source=source,
+                    **where,
+                    kind=type(exc).__name__,
+                    status=status,
+                )
         report.log("source", source=source, items=len(found))
         items.extend(found)
     return items
@@ -646,13 +714,14 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     if not set(sources) <= set(SOURCES):
         parser.error(f"unknown source in {args.sources!r}")
     gh_token = env.get("BACKLOG_SYNC_GITHUB_TOKEN", "").strip()
+    gh_tokens = env.get("BACKLOG_SYNC_GITHUB_TOKENS", "").strip()
     sentry_token = env.get("SENTRY_AUTH_TOKEN", "").strip()
     url, token = (
         env.get("EMPIRE_TASKS_API_URL", "").strip(),
         env.get("BACKLOG_SYNC_TOKEN", "").strip(),
     )
     need = {
-        "BACKLOG_SYNC_GITHUB_TOKEN": gh_token
+        "BACKLOG_SYNC_GITHUB_TOKEN": (gh_token or gh_tokens)
         if {"github", "files"} & set(sources)
         else "-",
         "SENTRY_AUTH_TOKEN": sentry_token if "sentry" in sources else "-",
@@ -687,12 +756,27 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         for r in env.get("BACKLOG_SYNC_BOT_REPOS", AUTOPILOT_REPOS).split(",")
         if r.strip()
     ]
+    gh: dict[str, httpx.Client] | None = None
+    if {"github", "files"} & set(sources):
+        try:
+            tokens = owner_tokens(owners, gh_token, gh_tokens)
+        except ValueError as exc:  # the message names owners, never a token
+            print(
+                json.dumps(
+                    {
+                        "event": "backlog.run",
+                        "error": "missing_config",
+                        "detail": str(exc),
+                    }
+                )
+            )
+            return 2
+        clients = {
+            t: _client(GITHUB_API, t, Accept="application/vnd.github+json")
+            for t in dict.fromkeys(tokens.values())
+        }
+        gh = {owner: clients[t] for owner, t in tokens.items()}
     report = Report()
-    gh = (
-        _client(GITHUB_API, gh_token, Accept="application/vnd.github+json")
-        if gh_token
-        else None
-    )
     sentry = _client(SENTRY_API, sentry_token) if sentry_token else None
     tasks = (
         _client(url, token, **{"X-Empire-Channel": "workflow"})
@@ -716,7 +800,8 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
             )
         apply(items, api, report, dry_run=args.dry_run)
     finally:
-        for client in (gh, sentry, tasks):
+        github_clients = list({id(c): c for c in (gh or {}).values()}.values())
+        for client in (*github_clients, sentry, tasks):
             if client is not None:
                 client.close()
     ok = report.counts["errors"] == 0

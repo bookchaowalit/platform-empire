@@ -602,3 +602,76 @@ def test_a_retry_that_cannot_finish_before_the_deadline_is_not_started():
         api.get(ITEM)
     # after the first call (t=10) a retry needs 2 s backoff + 30 s timeout > 40 s left: none.
     assert len(calls) == 1
+
+
+# --- one GitHub token per owner (a fine-grained PAT covers a single owner) ------------
+
+
+def test_owner_tokens_fall_back_to_the_default_token():
+    tokens = sync.owner_tokens(
+        ["bookchaowalit", "bookchaowalit-website", "bookchaowalit-ai"],
+        default="d",
+        mapping=" bookchaowalit-website = w ,bookchaowalit-ai=a,stranger=s",
+    )
+    assert tokens == {
+        "bookchaowalit": "d",
+        "bookchaowalit-website": "w",
+        "bookchaowalit-ai": "a",
+    }
+
+
+def test_owner_tokens_without_a_token_or_malformed_entries_never_echo_values():
+    with pytest.raises(ValueError, match=r"^no GitHub token for owner\(s\): b$"):
+        sync.owner_tokens(["a", "b"], default="", mapping="a=secret-a")
+    with pytest.raises(
+        ValueError, match=r"^BACKLOG_SYNC_GITHUB_TOKENS entry 1 is not owner=token$"
+    ):
+        sync.owner_tokens(["a"], default="d", mapping="secret-without-owner")
+
+
+def test_each_owner_group_is_searched_with_its_own_client_and_failures_stay_local(
+    capsys,
+):
+    seen: dict[str, list[str]] = {"default": [], "web": []}
+
+    def handler(name: str, status: int = 200):
+        def handle(request: httpx.Request) -> httpx.Response:
+            seen[name].append(request.url.params["q"])
+            if status != 200:
+                return httpx.Response(status)
+            return httpx.Response(200, json={"items": [issue(len(seen[name]))]})
+
+        return handle
+
+    default, web = mock(handler("default")), mock(handler("web", 403))
+    report = sync.Report()
+    items = sync.collect(
+        ["github"],
+        {"a": default, "b": default, "web": web},
+        None,
+        ["a", "b", "web"],
+        "o",
+        report,
+        [OWNER_REPO],
+    )
+    # one search per state for the owners sharing a token; the other owner's own client
+    assert all("user:a user:b" in q and "user:web" not in q for q in seen["default"])
+    assert seen["web"]
+    assert all(q.endswith("user:web") for q in seen["web"])
+    assert len(items) == 2  # the 403 owner is skipped, the rest still sync
+    assert report.counts["errors"] == 1
+    out = capsys.readouterr().out
+    assert '"owners": "web"' in out
+    assert '"status": 403' in out
+
+
+def test_main_reports_an_owner_without_a_token_as_missing_config(capsys):
+    env = {
+        "BACKLOG_SYNC_GITHUB_OWNERS": "a,b",
+        "BACKLOG_SYNC_GITHUB_TOKENS": "a=sekrit-a",
+    }
+    assert sync.main(["--dry-run", "--sources", "github"], env=env) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"] == "missing_config"
+    assert out["detail"] == "no GitHub token for owner(s): b"
+    assert "sekrit" not in json.dumps(out)
