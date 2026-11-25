@@ -914,6 +914,17 @@
       ]
     },
     {
+      "id": "catalog-export",
+      "writers": [
+        "bookchaowalit/data-lake-pipelines:infra/scripts/data_lake/scheduled_registry_export.py"
+      ],
+      "does": "daily SPEC-002 rollout step 5: lists catalog concepts and metric definitions (public/internal only, D7b) and exports them to the lake (domain=metadata); read-only, no cell read scope",
+      "scopes": [
+        "catalog.concept:read",
+        "catalog.metric-definition:read"
+      ]
+    },
+    {
       "id": "solo-web",
       "writers": [
         "bookchaowalit/life-dashboard-web:lib/cells.ts"

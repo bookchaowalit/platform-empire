@@ -33,6 +33,7 @@
     {"automation": "stripe-reconciler", "provider": "infisical", "path": "/empire-platform", "variable": "EMPIRE_AUTOMATION_TOKEN_STRIPE_RECONCILER"},
     {"automation": "stripe-reconciler", "provider": "railway", "checkout": "platform-empire", "service": "stripe-reconcile", "variable": "CRM_LEDGER_TOKEN"},
     {"automation": "hiring-radar", "provider": "railway", "checkout": "sales-crm", "project": "data-schedules", "service": "hiring-radar", "variable": "CRM_API_TOKEN"},
+    {"automation": "catalog-export", "provider": "railway", "checkout": "data-lake-pipelines", "project": "data-schedules", "service": "registry-export", "variable": "CATALOG_EXPORT_TOKEN"},
     {"automation": "owner-mcp", "provider": "cloudflare", "worker": "solo-empire-mcp-remote", "variable": "AGENCY_CRM_TOKEN"},
     {"automation": "owner-mcp", "provider": "cloudflare", "worker": "solo-empire-mcp-remote", "variable": "INCOME_CRM_TOKEN"}
   ]

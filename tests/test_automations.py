@@ -388,3 +388,13 @@ def test_only_the_grantor_refusal_is_skipped():
         Exc("delegation scope graph.time:write exceeds the grantor's permissions")
     )
     assert not _grantor_refused(Exc("permission denied for table delegations"))
+
+
+def test_catalog_export_reads_only_the_catalog():
+    # SPEC-002 rollout step 5: with no cell read scope the token sees only public/internal metric
+    # definitions (D7b), which is exactly what the lake export may contain.
+    exporter = next(a for a in REGISTRY["automations"] if a["id"] == "catalog-export")
+    assert sorted(exporter["scopes"]) == [
+        "catalog.concept:read",
+        "catalog.metric-definition:read",
+    ]
