@@ -1684,6 +1684,37 @@ def test_a_reimport_above_the_tombstone_revives_the_subject_and_its_set(cluster)
     ) == [("active",)]
 
 
+def test_a_reimported_set_that_beats_its_created_still_lands(cluster):
+    """2012: parallel publishers may deliver the re-import's set before the .created that revives the node."""
+    ws = seeded(cluster)
+    goal = "502"
+    subject = f"empire:goals:goal:{goal}"
+    work = ["empire:platform:domain:work"]
+    health = ["empire:platform:domain:health"]
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal))
+    ingest(cluster, ws, set_event(ws, "goals", "goal", goal, "in-domain", work, 1))
+    ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal, verb="deleted", version=2))
+    # a delayed set of the deleted incarnation is still refused
+    late = set_event(ws, "goals", "goal", goal, "in-domain", health, 2)
+    assert ingest(cluster, ws, late) == "stale"
+    # the re-import (version 3): its set first, while the node is still deleted
+    assert (
+        ingest(
+            cluster, ws, set_event(ws, "goals", "goal", goal, "in-domain", health, 3)
+        )
+        == "edges"
+    )
+    assert (
+        ingest(cluster, ws, lifecycle(ws, "goals", "goal", goal, version=3)) == "node"
+    )
+    assert [row[0] for row in live_edges(cluster, subject)] == [
+        f"empire:platform:domain:{ws.id}:health"
+    ]
+    assert su(
+        cluster, "SELECT lifecycle FROM graph.nodes WHERE urn = %s", (subject,)
+    ) == [("active",)]
+
+
 def test_kept_edge_takes_the_new_sets_classification(cluster):
     ws = seeded(cluster)
     goal = str(uuid.uuid4())
