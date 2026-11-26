@@ -458,8 +458,11 @@ def file_items(
                     f"/repos/{repo}/contents/{urllib.parse.quote(path)}",
                     headers={"Accept": "application/vnd.github.raw+json"},
                 )
-            except RunDeadline:
-                raise  # out of read time: the whole group stops, not just this file
+            except RunDeadline:  # out of read time: keep what was read, stop the group
+                report.log(
+                    "error", source=kind, owners=",".join(owners), kind="RunDeadline"
+                )
+                return
             except (httpx.TransportError, httpx.DecodingError) as exc:
                 if not failures.reported[0]:
                     failures.reported[0] = True
@@ -804,6 +807,11 @@ def collect(
                 continue
             found.extend(part)
         report.log("source", source=source, items=len(found))
+        # a fixed order whatever group was read first, so when two files share a key the
+        # same one wins every run (apply() keeps the first item of a key)
+        found.sort(
+            key=lambda i: (i.key, json.dumps(i.body, sort_keys=True, default=str))
+        )
         items.extend(found)
     return items
 

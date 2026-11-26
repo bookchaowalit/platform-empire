@@ -1033,3 +1033,57 @@ def test_file_download_failures_reach_sentry_once_per_run(monkeypatch):
     )
     assert report.counts["errors"] == 2 * sync.FILE_DOWNLOAD_FAILURES
     assert len(captured) == 1  # one blocking Sentry flush per run, not per file
+
+
+def test_files_read_before_the_deadline_are_kept():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            hits = [
+                {
+                    "repository": {"full_name": "a/r"},
+                    "path": f"docs/{name}.md",
+                    "html_url": f"https://github.com/a/r/{name}",
+                }
+                for name in (
+                    ("first", "late") if "Incident" in request.url.params["q"] else ()
+                )
+            ]
+            return httpx.Response(200, json={"items": hits})
+        if "late" in request.url.path:
+            raise sync.RunDeadline("late", request=request)
+        return httpx.Response(200, text=INCIDENT)
+
+    report = sync.Report()
+    items = sync.collect(
+        ["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None
+    )
+    assert items  # the first file's actions still sync
+    assert report.counts["errors"] == 1  # the cut-off is reported once
+
+
+def test_rotation_never_flips_which_item_wins_a_shared_key(monkeypatch):
+    def handler(owner: str):
+        def handle(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                hit = {
+                    "repository": {"full_name": f"{owner}/r"},
+                    "path": "docs/incident.md",
+                    "html_url": f"https://github.com/{owner}/r/incident",
+                }
+                return httpx.Response(200, json={"items": [hit]})
+            return httpx.Response(200, text=INCIDENT)
+
+        return handle
+
+    clients = {"a": mock(handler("a")), "b": mock(handler("b"))}
+    winners = set()
+    for hour in (0, 1):
+        monkeypatch.setattr(sync.time, "time", lambda h=hour: h * 3600.0 + 60)
+        items = sync.collect(
+            ["files"], clients, None, ["a", "b"], "o", sync.Report(), pace=lambda: None
+        )
+        first = {}
+        for item in items:
+            first.setdefault(item.key, json.dumps(item.body, sort_keys=True))
+        winners.add(tuple(sorted(first.items())))
+    assert len(winners) == 1
