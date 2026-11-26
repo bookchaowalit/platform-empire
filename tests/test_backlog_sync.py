@@ -931,3 +931,48 @@ def test_a_file_download_past_the_read_deadline_stops_the_group(monkeypatch):
     report = sync.Report()
     sync.collect(["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None)
     assert report.counts["errors"] == 1  # the group, not one error per file
+
+
+def test_file_download_5xx_counts_toward_the_group_failure_budget():
+    downloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            hits = [
+                {
+                    "repository": {"full_name": "a/r"},
+                    "path": f"docs/f{n}.md",
+                    "html_url": f"https://github.com/a/r/f{n}",
+                }
+                for n in range(6)
+            ]
+            return httpx.Response(200, json={"items": hits})
+        downloads.append(request.url.path)
+        return httpx.Response(503 if "f0" not in request.url.path else 404)
+
+    report = sync.Report()
+    sync.collect(["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None)
+    # f0 is a 404 (skipped, not counted); f1-f3 are 503s and exhaust the budget
+    assert len(downloads) == 1 + sync.FILE_DOWNLOAD_FAILURES
+
+
+def test_groups_skipped_by_the_read_deadline_never_reach_sentry(monkeypatch):
+    captured = []
+    monkeypatch.setattr(sync, "capture", captured.append)
+    monkeypatch.setattr(sync.time, "monotonic", lambda: 100.0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": []})
+
+    report = sync.Report()
+    sync.collect(
+        ["github", "files"],
+        {"a": mock(handler), "b": mock(handler)},
+        None,
+        ["a", "b"],
+        "o",
+        report,
+        read_deadline=50.0,
+    )
+    assert report.counts["errors"] == 4  # every group is still reported in the log
+    assert captured == []  # nothing was sent, so nothing to report or flush

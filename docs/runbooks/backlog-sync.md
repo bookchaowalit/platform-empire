@@ -93,6 +93,12 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
   a fine-grained personal access token if the token's lifetime is greater than 366 days"*. Give every
   PAT here an expiry of at most 366 days. `BACKLOG_SYNC_GITHUB_TOKENS` (per-owner tokens) now lets each
   org get its own PAT, which is also the way to reach org-private repos (see above).
+- **Known gap (2026-11-26): the read deadline is per request phase.** Source reads stop 30 minutes
+  into the run (no request starts later; every connect/read/write timeout is capped to the time
+  left), so tasks-api keeps 15 of the 45 minutes. A server that drips one response body slower than
+  each capped read timeout could still pass the deadline: httpx has no whole-request wall clock. Not
+  fixed because GitHub and Sentry answer small JSON pages; a fix would stream bodies against a
+  monotonic budget.
 - Rollback: delete the Railway service `backlog-sync` (the tasks stay in tasks-api), or remove
   `tasks.task:write` by revoking the delegation (`platform.delegations.revoked_at`).
 

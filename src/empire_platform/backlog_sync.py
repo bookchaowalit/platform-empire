@@ -468,6 +468,10 @@ def file_items(
                 )
                 continue
             if raw.status_code != 200:
+                if (
+                    raw.status_code >= 500
+                ):  # transient: spends the budget like a timeout
+                    failures.count += 1
                 report.log(
                     "error", source=kind, where=f"{repo}/{path}", status=raw.status_code
                 )
@@ -770,7 +774,8 @@ def collect(
             except (
                 httpx.HTTPError
             ) as exc:  # a source that is down is skipped, not fatal
-                capture(exc)
+                if not isinstance(exc, RunDeadline):  # nothing was sent: no event
+                    capture(exc)
                 status = (
                     exc.response.status_code
                     if isinstance(exc, httpx.HTTPStatusError)
