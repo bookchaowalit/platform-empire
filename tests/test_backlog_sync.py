@@ -1080,3 +1080,18 @@ def test_resolving_shared_keys_keeps_the_rotated_read_order():
     # b's group was read first this hour: it stays first; the shared key keeps its
     # first position but is won by the stable file
     assert sync.resolve_shared_keys([b, late, a, early]) == [b, early, a]
+
+
+def test_an_owner_that_is_not_a_github_login_is_refused_without_echo(capsys):
+    with pytest.raises(
+        ValueError, match=r"^BACKLOG_SYNC_GITHUB_OWNERS entry 2 is not a GitHub owner$"
+    ):
+        sync.owner_tokens(["ok-org", "org=sekrit"], default="", mapping="")
+    env = {
+        "BACKLOG_SYNC_GITHUB_OWNERS": "a,b=sekrit_value",
+        "BACKLOG_SYNC_GITHUB_TOKEN": "default-token",
+    }
+    assert sync.main(["--dry-run", "--sources", "github"], env=env) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["detail"] == "BACKLOG_SYNC_GITHUB_OWNERS entry 2 is not a GitHub owner"
+    assert "sekrit" not in json.dumps(out)

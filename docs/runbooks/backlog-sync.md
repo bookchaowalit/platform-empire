@@ -102,6 +102,11 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
 - **Known gap (2026-11-26): a group cut by the read deadline adds nothing.** Items already parsed in
   that group are dropped rather than kept, on purpose: a partial read could repoint a task whose key
   two files share. The hourly group rotation gives every group the first slot in turn.
+- **Known gaps (2026-11-26, per-org tokens; none are in use yet).** (1) A key two files share in
+  different owner groups is won by the stable file; if that file's group fails one run, the other
+  file is synced for that run and the task can flip back the next. (2) The sync filters by owner, not
+  by repository: a per-org token also reads that org's public repos, so set one only for an org whose
+  public repos may all feed the owner workspace, until a repository allowlist exists.
 - Rollback: delete the Railway service `backlog-sync` (the tasks stay in tasks-api), or remove
   `tasks.task:write` by revoking the delegation (`platform.delegations.revoked_at`).
 
