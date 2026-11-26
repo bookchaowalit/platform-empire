@@ -388,27 +388,31 @@ class SearchPace:
         interval: float = CODE_SEARCH_INTERVAL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        deadline: float | None = None,
     ) -> None:
         self.interval, self.clock, self.sleep = interval, clock, sleep
+        self.deadline = deadline  # on ``clock``; never wait past it
         self.last: float | None = None
 
     def __call__(self) -> None:
         if self.last is not None:
             wait = self.last + self.interval - self.clock()
             if wait > 0:
+                if self.deadline is not None and self.clock() + wait > self.deadline:
+                    raise RunDeadline("read deadline: the search was not started")
                 self.sleep(wait)
         self.last = self.clock()
 
 
 # A file download that fails (timeout, reset, corrupt body) skips that file. After this many
-# in one run the files source stops downloading, so 30 s timeouts cannot eat the run deadline
-# and starve the tasks-api phase (90 timeouts would spend all 45 minutes).
+# in one owner group the group stops downloading, so 30 s timeouts cannot eat the run deadline
+# (13 groups x 3 x 30 s stays under 20 minutes); other groups keep their own budget.
 FILE_DOWNLOAD_FAILURES = 3
 
 
 @dataclass
 class FileFailures:
-    """File download failures so far in this run, shared by every owner group."""
+    """File download failures so far in one owner group."""
 
     limit: int = FILE_DOWNLOAD_FAILURES
     count: int = 0
@@ -492,6 +496,9 @@ RETRY_STATUS = frozenset({502, 503, 504})
 # remaining item fails fast and the heartbeat still goes out with 15 min to spare. A request's
 # timeout never reaches past the deadline, and a retry starts only if a full timeout still fits.
 RUN_DEADLINE_SECONDS = 45 * 60
+# Reading the sources stops here, so the tasks-api phase keeps 15 minutes of the run budget:
+# no paced search waits past it and no source or owner group starts after it.
+READ_DEADLINE_SECONDS = 30 * 60
 REQUEST_TIMEOUT_SECONDS = 30
 
 
@@ -707,6 +714,7 @@ def collect(
     bot_repos: Iterable[str] = (),
     pace: Callable[[], None] | None = None,
     issue_pace: Callable[[], None] | None = None,
+    read_deadline: float | None = None,
 ) -> list[Item]:
     """Read every source. A source (or one owner group of a GitHub source) that fails is
     logged and skipped; the rest still sync."""
@@ -717,8 +725,10 @@ def collect(
 
     groups = owner_groups(gh, owners)
     # one pace per search API for every owner group: the quotas are per GitHub account
-    search_pace = pace or SearchPace()
-    issues_pace = issue_pace or SearchPace(ISSUE_SEARCH_INTERVAL_SECONDS)
+    search_pace = pace or SearchPace(deadline=read_deadline)
+    issues_pace = issue_pace or SearchPace(
+        ISSUE_SEARCH_INTERVAL_SECONDS, deadline=read_deadline
+    )
     assert groups or not ({"github", "files"} & set(sources))
     Part = tuple[str | None, Callable[[], Iterable[Item]]]
 
@@ -731,11 +741,13 @@ def collect(
             ),
         )
 
-    file_failures = FileFailures()  # one budget for the whole run
-
     def files_part(group: list[str], client: httpx.Client) -> Part:
         return ",".join(group), lambda: file_items(
-            client, group, report, search_pace, file_failures
+            client,
+            group,
+            report,
+            search_pace,
+            FileFailures(),  # per group
         )
 
     readers: dict[str, Callable[[], list[Part]]] = {
@@ -750,6 +762,8 @@ def collect(
         found: list[Item] = []
         for scope, read in readers[source]():
             try:
+                if read_deadline is not None and time.monotonic() > read_deadline:
+                    raise RunDeadline("read deadline: the source was not read")
                 part = list(read())  # a group that fails midway adds nothing
             except (
                 httpx.HTTPError
@@ -894,6 +908,7 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
             env.get("SENTRY_ORG", "personal-yu0"),
             report,
             bot_repos,
+            read_deadline=started + READ_DEADLINE_SECONDS,
         )
         api = None
         if tasks:

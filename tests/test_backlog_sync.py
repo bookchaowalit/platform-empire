@@ -833,3 +833,62 @@ def test_file_downloads_stop_after_repeated_failures_and_decode_errors_skip_one(
     assert len(downloads) == 2 + sync.FILE_DOWNLOAD_FAILURES - 1
     assert report.counts["errors"] == sync.FILE_DOWNLOAD_FAILURES
     assert captured  # failures still reach Sentry
+
+
+def test_a_group_out_of_download_budget_never_stops_the_next_group():
+    downloads = []
+
+    def handler(name: str):
+        def handle(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                hits = [
+                    {
+                        "repository": {"full_name": f"{name}/r"},
+                        "path": f"docs/f{n}.md",
+                        "html_url": f"https://github.com/{name}/r/f{n}",
+                    }
+                    for n in range(4)
+                ]
+                return httpx.Response(200, json={"items": hits})
+            downloads.append(name)
+            if name == "a":
+                raise httpx.ReadError("reset", request=request)
+            return httpx.Response(200, text=INCIDENT)
+
+        return handle
+
+    report = sync.Report()
+    items = sync.collect(
+        ["files"],
+        {"a": mock(handler("a")), "b": mock(handler("b"))},
+        None,
+        ["a", "b"],
+        "o",
+        report,
+        pace=lambda: None,
+    )
+    assert downloads.count("a") == sync.FILE_DOWNLOAD_FAILURES
+    assert "b" in downloads
+    assert items
+
+
+def test_search_pace_never_waits_past_the_read_deadline():
+    now = [0.0]
+    pace = sync.SearchPace(
+        interval=10.0, clock=lambda: now[0], sleep=lambda s: None, deadline=5.0
+    )
+    pace()
+    with pytest.raises(sync.RunDeadline):
+        pace()  # the wait would end at 10 s, past the 5 s read deadline
+
+
+def test_sources_read_past_the_read_deadline_are_skipped(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": []})
+
+    monkeypatch.setattr(sync.time, "monotonic", lambda: 100.0)
+    report = sync.Report()
+    sync.collect(
+        ["github"], mock(handler), None, ["a"], "o", report, read_deadline=50.0
+    )
+    assert report.counts["errors"] == 1
