@@ -416,6 +416,9 @@ class FileFailures:
 
     limit: int = FILE_DOWNLOAD_FAILURES
     count: int = 0
+    # shared by every group of the run: only the first failure goes to Sentry, because
+    # each capture() blocks on a flush
+    reported: list[bool] = field(default_factory=lambda: [False])
 
     @property
     def exhausted(self) -> bool:
@@ -458,7 +461,9 @@ def file_items(
             except RunDeadline:
                 raise  # out of read time: the whole group stops, not just this file
             except (httpx.TransportError, httpx.DecodingError) as exc:
-                capture(exc)
+                if not failures.reported[0]:
+                    failures.reported[0] = True
+                    capture(exc)
                 failures.count += 1
                 report.log(
                     "error",
@@ -730,6 +735,9 @@ def collect(
         return client
 
     groups = owner_groups(gh, owners)
+    if groups:  # start from another group every hour, so no group is always last
+        turn = int(time.time() // 3600) % len(groups)
+        groups = groups[turn:] + groups[:turn]
     # one pace per search API for every owner group: the quotas are per GitHub account
     search_pace = pace or SearchPace(deadline=read_deadline)
     issues_pace = issue_pace or SearchPace(
@@ -747,13 +755,17 @@ def collect(
             ),
         )
 
+    reported = [False]
+
     def files_part(group: list[str], client: httpx.Client) -> Part:
         return ",".join(group), lambda: file_items(
             client,
             group,
             report,
             search_pace,
-            FileFailures(),  # per group
+            FileFailures(
+                reported=reported
+            ),  # budget per group, one Sentry event per run
         )
 
     readers: dict[str, Callable[[], list[Part]]] = {

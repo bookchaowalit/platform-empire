@@ -976,3 +976,60 @@ def test_groups_skipped_by_the_read_deadline_never_reach_sentry(monkeypatch):
     )
     assert report.counts["errors"] == 4  # every group is still reported in the log
     assert captured == []  # nothing was sent, so nothing to report or flush
+
+
+def test_owner_groups_start_from_a_different_group_every_hour(monkeypatch):
+    order = []
+
+    def handler(name: str):
+        def handle(request: httpx.Request) -> httpx.Response:
+            order.append(name)
+            return httpx.Response(200, json={"items": []})
+
+        return handle
+
+    clients = {o: mock(handler(o)) for o in ("a", "b", "c")}
+    for hour, first in ((0, "a"), (1, "b"), (5, "c")):
+        order.clear()
+        monkeypatch.setattr(sync.time, "time", lambda h=hour: h * 3600.0 + 60)
+        sync.collect(
+            ["github"],
+            clients,
+            None,
+            ["a", "b", "c"],
+            "o",
+            sync.Report(),
+            issue_pace=lambda: None,
+        )
+        assert order[0] == first
+
+
+def test_file_download_failures_reach_sentry_once_per_run(monkeypatch):
+    captured = []
+    monkeypatch.setattr(sync, "capture", captured.append)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            hits = [
+                {
+                    "repository": {"full_name": "x/r"},
+                    "path": f"docs/f{n}.md",
+                    "html_url": f"https://github.com/x/r/f{n}",
+                }
+                for n in range(4)
+            ]
+            return httpx.Response(200, json={"items": hits})
+        raise httpx.ReadError("reset", request=request)
+
+    report = sync.Report()
+    sync.collect(
+        ["files"],
+        {"a": mock(handler), "b": mock(handler)},
+        None,
+        ["a", "b"],
+        "o",
+        report,
+        pace=lambda: None,
+    )
+    assert report.counts["errors"] == 2 * sync.FILE_DOWNLOAD_FAILURES
+    assert len(captured) == 1  # one blocking Sentry flush per run, not per file
