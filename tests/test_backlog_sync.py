@@ -602,3 +602,434 @@ def test_a_retry_that_cannot_finish_before_the_deadline_is_not_started():
         api.get(ITEM)
     # after the first call (t=10) a retry needs 2 s backoff + 30 s timeout > 40 s left: none.
     assert len(calls) == 1
+
+
+# --- one GitHub token per owner (a fine-grained PAT covers a single owner) ------------
+
+
+def test_owner_tokens_fall_back_to_the_default_token():
+    tokens = sync.owner_tokens(
+        ["bookchaowalit", "bookchaowalit-website", "bookchaowalit-ai"],
+        default="d",
+        mapping=" bookchaowalit-website = w ,bookchaowalit-ai=a,stranger=s",
+    )
+    assert tokens == {
+        "bookchaowalit": "d",
+        "bookchaowalit-website": "w",
+        "bookchaowalit-ai": "a",
+    }
+
+
+def test_owner_tokens_without_a_token_or_malformed_entries_never_echo_values():
+    with pytest.raises(ValueError, match=r"^no GitHub token for owner\(s\): b$"):
+        sync.owner_tokens(["a", "b"], default="", mapping="a=secret-a")
+    with pytest.raises(
+        ValueError, match=r"^BACKLOG_SYNC_GITHUB_TOKENS entry 1 is not owner=token$"
+    ):
+        sync.owner_tokens(["a"], default="d", mapping="secret-without-owner")
+
+
+def test_each_owner_group_is_searched_with_its_own_client_and_failures_stay_local(
+    capsys,
+):
+    seen: dict[str, list[str]] = {"default": [], "web": []}
+
+    def handler(name: str, status: int = 200):
+        def handle(request: httpx.Request) -> httpx.Response:
+            seen[name].append(request.url.params["q"])
+            if status != 200:
+                return httpx.Response(status)
+            return httpx.Response(200, json={"items": [issue(len(seen[name]))]})
+
+        return handle
+
+    default, web = mock(handler("default")), mock(handler("web", 403))
+    report = sync.Report()
+    items = sync.collect(
+        ["github"],
+        {"a": default, "b": default, "web": web},
+        None,
+        ["a", "b", "web"],
+        "o",
+        report,
+        [OWNER_REPO],
+    )
+    # one search per state for the owners sharing a token; the other owner's own client
+    assert all("user:a user:b" in q and "user:web" not in q for q in seen["default"])
+    assert seen["web"]
+    assert all(q.endswith("user:web") for q in seen["web"])
+    assert len(items) == 2  # the 403 owner is skipped, the rest still sync
+    assert report.counts["errors"] == 1
+    out = capsys.readouterr().out
+    assert '"owners": "web"' in out
+    assert '"status": 403' in out
+
+
+def test_main_reports_an_owner_without_a_token_as_missing_config(capsys):
+    env = {
+        "BACKLOG_SYNC_GITHUB_OWNERS": "a,b",
+        "BACKLOG_SYNC_GITHUB_TOKENS": "a=sekrit-a",
+    }
+    assert sync.main(["--dry-run", "--sources", "github"], env=env) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"] == "missing_config"
+    assert out["detail"] == "no GitHub token for owner(s): b"
+    assert "sekrit" not in json.dumps(out)
+
+
+def test_owner_names_match_tokens_case_insensitively():
+    tokens = sync.owner_tokens(
+        ["BookChaowalit-Website"], default="", mapping="bookchaowalit-website=w"
+    )
+    assert tokens == {"BookChaowalit-Website": "w"}
+
+
+def test_no_github_owners_is_missing_config_not_a_crash(capsys):
+    with pytest.raises(ValueError, match=r"^no GitHub owners configured$"):
+        sync.owner_tokens([], default="d", mapping="")
+    env = {"BACKLOG_SYNC_GITHUB_OWNERS": " , ", "BACKLOG_SYNC_GITHUB_TOKEN": "d"}
+    assert sync.main(["--dry-run", "--sources", "github"], env=env) == 2
+    assert json.loads(capsys.readouterr().out)["error"] == "missing_config"
+
+
+def test_a_group_that_fails_midway_contributes_no_items():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if int(request.url.params["page"]) == 1:
+            return httpx.Response(200, json={"items": [issue(n) for n in range(100)]})
+        return httpx.Response(502)
+
+    report = sync.Report()
+    items = sync.collect(["github"], mock(handler), None, ["a"], "o", report)
+    assert items == []  # page 1 was read, page 2 failed: the whole group is skipped
+    assert report.counts["errors"] == 1
+
+
+def test_code_search_is_paced_across_every_owner_client():
+    now = [0.0]
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        now[0] += seconds
+
+    pace = sync.SearchPace(interval=6.0, clock=lambda: now[0], sleep=sleep)
+    pace()  # the first search never waits
+    now[0] += 1.0
+    pace()  # 1 s later: waits the other 5 s
+    now[0] += 10.0
+    pace()  # past the interval: no wait
+    assert slept == [5.0]
+
+    searches = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        searches.append(request.url.path)
+        return httpx.Response(200, json={"items": []})
+
+    calls = []
+    sync.collect(
+        ["files"],
+        {"a": mock(handler), "b": mock(handler)},
+        None,
+        ["a", "b"],
+        "o",
+        sync.Report(),
+        pace=lambda: calls.append(1),
+    )
+    # one shared pace for both owners' tokens: the quota is per GitHub account
+    assert len(calls) == len(searches) == 2 * len(sync.FILE_KINDS)
+
+
+def test_one_owner_listed_twice_with_different_tokens_is_refused():
+    message = r"^BACKLOG_SYNC_GITHUB_TOKENS entries 1 and 2 name one owner twice$"
+    with pytest.raises(ValueError, match=message):
+        sync.owner_tokens(["org"], default="", mapping="Org=sekrit-1,org=sekrit-2")
+    # a token pasted on the owner side is never echoed back
+    with pytest.raises(ValueError, match=message) as pasted:
+        sync.owner_tokens(["org"], default="d", mapping="sekrit=x,SEKRIT=y")
+    assert "sekrit" not in str(pasted.value).lower()
+    # the same token twice is harmless
+    assert sync.owner_tokens(["org"], default="", mapping="Org=t,org=t") == {"org": "t"}
+
+
+def test_issue_search_is_paced_across_every_owner_client():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": []})
+
+    calls = []
+    sync.collect(
+        ["github"],
+        {"a": mock(handler), "b": mock(handler)},
+        None,
+        ["a", "b"],
+        "o",
+        sync.Report(),
+        issue_pace=lambda: calls.append(1),
+    )
+    assert len(calls) == 4  # open + closed for each of the two owner groups
+
+
+def test_a_file_download_that_times_out_skips_only_that_file():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            hits = [
+                {
+                    "repository": {"full_name": "a/r"},
+                    "path": f"docs/{name}.md",
+                    "html_url": f"https://github.com/a/r/{name}",
+                }
+                for name in ("slow", "ok")
+            ]
+            return httpx.Response(200, json={"items": hits})
+        if "slow" in request.url.path:
+            raise httpx.ReadTimeout("slow", request=request)
+        return httpx.Response(200, text=INCIDENT)
+
+    report = sync.Report()
+    items = sync.collect(
+        ["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None
+    )
+    assert items  # the file that downloaded still syncs
+    assert report.counts["errors"] == len(sync.FILE_KINDS)  # one per search's slow hit
+
+
+def test_file_downloads_stop_after_repeated_failures_and_decode_errors_skip_one(
+    monkeypatch,
+):
+    captured = []
+    monkeypatch.setattr(sync, "capture", captured.append)
+    downloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            hits = [
+                {
+                    "repository": {"full_name": "a/r"},
+                    "path": f"docs/{name}.md",
+                    "html_url": f"https://github.com/a/r/{name}",
+                }
+                for name in (
+                    ("ok", "s1", "s2", "s3", "s4")
+                    if "Incident" in request.url.params["q"]
+                    else ("bad",)
+                )
+            ]
+            return httpx.Response(200, json={"items": hits})
+        downloads.append(request.url.path)
+        if "bad" in request.url.path:  # a corrupt gzip body: DecodingError
+            return httpx.Response(
+                200, content=b"not gzip", headers={"Content-Encoding": "gzip"}
+            )
+        if "/s" in request.url.path:
+            raise httpx.ReadTimeout("slow", request=request)
+        return httpx.Response(200, text=INCIDENT)
+
+    report = sync.Report()
+    items = sync.collect(
+        ["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None
+    )
+    assert items  # "ok" still syncs after the decode error
+    # bad + ok + 2 timeouts; then downloads stop for the rest of the run
+    assert len(downloads) == 2 + sync.FILE_DOWNLOAD_FAILURES - 1
+    assert report.counts["errors"] == sync.FILE_DOWNLOAD_FAILURES
+    assert captured  # failures still reach Sentry
+
+
+def test_a_group_out_of_download_budget_never_stops_the_next_group():
+    downloads = []
+
+    def handler(name: str):
+        def handle(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                hits = [
+                    {
+                        "repository": {"full_name": f"{name}/r"},
+                        "path": f"docs/f{n}.md",
+                        "html_url": f"https://github.com/{name}/r/f{n}",
+                    }
+                    for n in range(4)
+                ]
+                return httpx.Response(200, json={"items": hits})
+            downloads.append(name)
+            if name == "a":
+                raise httpx.ReadError("reset", request=request)
+            return httpx.Response(200, text=INCIDENT)
+
+        return handle
+
+    report = sync.Report()
+    items = sync.collect(
+        ["files"],
+        {"a": mock(handler("a")), "b": mock(handler("b"))},
+        None,
+        ["a", "b"],
+        "o",
+        report,
+        pace=lambda: None,
+    )
+    assert downloads.count("a") == sync.FILE_DOWNLOAD_FAILURES
+    assert "b" in downloads
+    assert items
+
+
+def test_search_pace_never_waits_past_the_read_deadline():
+    now = [0.0]
+    pace = sync.SearchPace(
+        interval=10.0, clock=lambda: now[0], sleep=lambda s: None, deadline=5.0
+    )
+    pace()
+    with pytest.raises(sync.RunDeadline):
+        pace()  # the wait would end at 10 s, past the 5 s read deadline
+
+
+def test_sources_read_past_the_read_deadline_are_skipped(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": []})
+
+    monkeypatch.setattr(sync.time, "monotonic", lambda: 100.0)
+    report = sync.Report()
+    sync.collect(
+        ["github"], mock(handler), None, ["a"], "o", report, read_deadline=50.0
+    )
+    assert report.counts["errors"] == 1
+
+
+def test_every_read_request_checks_the_read_deadline_and_caps_its_timeout():
+    now = [0.0]
+    timeouts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts.append(request.extensions["timeout"]["read"])
+        return httpx.Response(200, json={"items": []})
+
+    client = httpx.Client(
+        base_url="https://api.test",
+        transport=httpx.MockTransport(handler),
+        timeout=30,
+        event_hooks={"request": [sync.read_deadline_hook(100.0, lambda: now[0])]},
+    )
+    now[0] = 90.0
+    client.get("/search/code")
+    assert timeouts == [10.0]  # never past the deadline
+    now[0] = 101.0
+    with pytest.raises(sync.RunDeadline):
+        client.get("/search/code")
+    assert len(timeouts) == 1  # the late request was never sent
+
+
+def test_a_file_download_past_the_read_deadline_stops_the_group(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            hit = {
+                "repository": {"full_name": "a/r"},
+                "path": "docs/f.md",
+                "html_url": "https://github.com/a/r/f",
+            }
+            return httpx.Response(200, json={"items": [hit]})
+        raise sync.RunDeadline("late", request=request)
+
+    report = sync.Report()
+    sync.collect(["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None)
+    assert report.counts["errors"] == 1  # the group, not one error per file
+
+
+def test_file_download_5xx_counts_toward_the_group_failure_budget():
+    downloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            hits = [
+                {
+                    "repository": {"full_name": "a/r"},
+                    "path": f"docs/f{n}.md",
+                    "html_url": f"https://github.com/a/r/f{n}",
+                }
+                for n in range(6)
+            ]
+            return httpx.Response(200, json={"items": hits})
+        downloads.append(request.url.path)
+        return httpx.Response(503 if "f0" not in request.url.path else 404)
+
+    report = sync.Report()
+    sync.collect(["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None)
+    # f0 is a 404 (skipped, not counted); f1-f3 are 503s and exhaust the budget
+    assert len(downloads) == 1 + sync.FILE_DOWNLOAD_FAILURES
+
+
+def test_groups_skipped_by_the_read_deadline_never_reach_sentry(monkeypatch):
+    captured = []
+    monkeypatch.setattr(sync, "capture", captured.append)
+    monkeypatch.setattr(sync.time, "monotonic", lambda: 100.0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": []})
+
+    report = sync.Report()
+    sync.collect(
+        ["github", "files"],
+        {"a": mock(handler), "b": mock(handler)},
+        None,
+        ["a", "b"],
+        "o",
+        report,
+        read_deadline=50.0,
+    )
+    assert report.counts["errors"] == 4  # every group is still reported in the log
+    assert captured == []  # nothing was sent, so nothing to report or flush
+
+
+def test_owner_groups_start_from_a_different_group_every_hour(monkeypatch):
+    order = []
+
+    def handler(name: str):
+        def handle(request: httpx.Request) -> httpx.Response:
+            order.append(name)
+            return httpx.Response(200, json={"items": []})
+
+        return handle
+
+    clients = {o: mock(handler(o)) for o in ("a", "b", "c")}
+    for hour, first in ((0, "a"), (1, "b"), (5, "c")):
+        order.clear()
+        monkeypatch.setattr(sync.time, "time", lambda h=hour: h * 3600.0 + 60)
+        sync.collect(
+            ["github"],
+            clients,
+            None,
+            ["a", "b", "c"],
+            "o",
+            sync.Report(),
+            issue_pace=lambda: None,
+        )
+        assert order[0] == first
+
+
+def test_file_download_failures_reach_sentry_once_per_run(monkeypatch):
+    captured = []
+    monkeypatch.setattr(sync, "capture", captured.append)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            hits = [
+                {
+                    "repository": {"full_name": "x/r"},
+                    "path": f"docs/f{n}.md",
+                    "html_url": f"https://github.com/x/r/f{n}",
+                }
+                for n in range(4)
+            ]
+            return httpx.Response(200, json={"items": hits})
+        raise httpx.ReadError("reset", request=request)
+
+    report = sync.Report()
+    sync.collect(
+        ["files"],
+        {"a": mock(handler), "b": mock(handler)},
+        None,
+        ["a", "b"],
+        "o",
+        report,
+        pace=lambda: None,
+    )
+    assert report.counts["errors"] == 2 * sync.FILE_DOWNLOAD_FAILURES
+    assert len(captured) == 1  # one blocking Sentry flush per run, not per file

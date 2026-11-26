@@ -26,7 +26,10 @@ every item as ``would_upsert``. One failing source or item is logged and skipped
 exit code is 1 when anything failed, 2 when configuration is missing.
 
 Environment (nothing secret is printed):
-    BACKLOG_SYNC_GITHUB_TOKEN   read-only issues + contents + code search on the owners
+    BACKLOG_SYNC_GITHUB_TOKEN   read-only issues + contents + code search; the default
+                                token for every owner without its own entry below
+    BACKLOG_SYNC_GITHUB_TOKENS  comma list of owner=token (a fine-grained PAT covers one
+                                owner, so each org gets its own read-only token)
     BACKLOG_SYNC_GITHUB_OWNERS  comma list (default: bookchaowalit)
     BACKLOG_SYNC_BOT_REPOS      repos whose github-actions[bot] issues count (autopilot repos)
     SENTRY_AUTH_TOKEN, SENTRY_ORG (default personal-yu0)
@@ -171,7 +174,10 @@ def trusted(issue: Mapping[str, Any], bot_repos: Iterable[str]) -> bool:
 
 
 def github_issues(
-    gh: httpx.Client, owners: Iterable[str], bot_repos: Iterable[str] = ()
+    gh: httpx.Client,
+    owners: Iterable[str],
+    bot_repos: Iterable[str] = (),
+    pace: Callable[[], None] = lambda: None,
 ) -> Iterator[Mapping[str, Any]]:
     """Open issues, and issues closed in the last 30 days, labelled autopilot or backlog."""
     users = " ".join(f"user:{o}" for o in owners)
@@ -182,6 +188,7 @@ def github_issues(
     ):
         query = f"is:issue {state} label:autopilot,backlog {users}"
         for page in range(1, 11):  # the search API returns at most 1,000 results
+            pace()
             response = gh.get(
                 "/search/issues", params={"q": query, "per_page": 100, "page": page}
             )
@@ -365,23 +372,111 @@ def _is_template(path: str, markdown: str) -> bool:
     )
 
 
+# GitHub code search allows 10 requests a minute per account, shared by every PAT of that
+# account. With one token per org the files source makes 2 searches per owner group (26 for
+# 13 owners), so searches are spaced across all clients; 13 owners add about 3 minutes.
+CODE_SEARCH_INTERVAL_SECONDS = 60 / 9
+# Issue search allows 30 a minute per account: 2+ searches per owner group (26+ for 13).
+ISSUE_SEARCH_INTERVAL_SECONDS = 60 / 28
+
+
+class SearchPace:
+    """Waits so consecutive searches start at least ``interval`` seconds apart."""
+
+    def __init__(
+        self,
+        interval: float = CODE_SEARCH_INTERVAL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        deadline: float | None = None,
+    ) -> None:
+        self.interval, self.clock, self.sleep = interval, clock, sleep
+        self.deadline = deadline  # on ``clock``; never wait past it
+        self.last: float | None = None
+
+    def __call__(self) -> None:
+        if self.last is not None:
+            wait = self.last + self.interval - self.clock()
+            if wait > 0:
+                if self.deadline is not None and self.clock() + wait > self.deadline:
+                    raise RunDeadline("read deadline: the search was not started")
+                self.sleep(wait)
+        self.last = self.clock()
+
+
+# A file download that fails (timeout, reset, corrupt body) skips that file. After this many
+# in one owner group the group stops downloading, so 30 s timeouts cannot eat the run deadline
+# (13 groups x 3 x 30 s stays under 20 minutes); other groups keep their own budget.
+FILE_DOWNLOAD_FAILURES = 3
+
+
+@dataclass
+class FileFailures:
+    """File download failures so far in one owner group."""
+
+    limit: int = FILE_DOWNLOAD_FAILURES
+    count: int = 0
+    # shared by every group of the run: only the first failure goes to Sentry, because
+    # each capture() blocks on a flush
+    reported: list[bool] = field(default_factory=lambda: [False])
+
+    @property
+    def exhausted(self) -> bool:
+        return self.count >= self.limit
+
+
 def file_items(
-    gh: httpx.Client, owners: Iterable[str], report: Report
+    gh: httpx.Client,
+    owners: Iterable[str],
+    report: Report,
+    pace: Callable[[], None] = lambda: None,
+    failures: FileFailures | None = None,
 ) -> Iterator[Item]:
     users = " ".join(f"user:{o}" for o in owners)
+    failures = failures if failures is not None else FileFailures()
     for kind, (terms, parse) in FILE_KINDS.items():
+        if failures.exhausted:
+            report.log(
+                "files_stopped", owners=",".join(owners), failures=failures.count
+            )
+            return
+        pace()
         response = gh.get(
             "/search/code",
             params={"q": f"{terms} extension:md {users}", "per_page": 100},
         )
         response.raise_for_status()
         for hit in response.json()["items"]:
+            if failures.exhausted:
+                report.log(
+                    "files_stopped", owners=",".join(owners), failures=failures.count
+                )
+                return
             repo, path = hit["repository"]["full_name"], hit["path"]
-            raw = gh.get(
-                f"/repos/{repo}/contents/{urllib.parse.quote(path)}",
-                headers={"Accept": "application/vnd.github.raw+json"},
-            )
+            try:  # a download that fails skips that file, like an HTTP error status
+                raw = gh.get(
+                    f"/repos/{repo}/contents/{urllib.parse.quote(path)}",
+                    headers={"Accept": "application/vnd.github.raw+json"},
+                )
+            except RunDeadline:
+                raise  # out of read time: the whole group stops, not just this file
+            except (httpx.TransportError, httpx.DecodingError) as exc:
+                if not failures.reported[0]:
+                    failures.reported[0] = True
+                    capture(exc)
+                failures.count += 1
+                report.log(
+                    "error",
+                    source=kind,
+                    where=f"{repo}/{path}",
+                    kind=type(exc).__name__,
+                )
+                continue
             if raw.status_code != 200:
+                if (
+                    raw.status_code >= 500
+                ):  # transient: spends the budget like a timeout
+                    failures.count += 1
                 report.log(
                     "error", source=kind, where=f"{repo}/{path}", status=raw.status_code
                 )
@@ -412,6 +507,9 @@ RETRY_STATUS = frozenset({502, 503, 504})
 # remaining item fails fast and the heartbeat still goes out with 15 min to spare. A request's
 # timeout never reaches past the deadline, and a retry starts only if a full timeout still fits.
 RUN_DEADLINE_SECONDS = 45 * 60
+# Reading the sources stops here, so the tasks-api phase keeps 15 minutes of the run budget:
+# no paced search waits past it and no source or owner group starts after it.
+READ_DEADLINE_SECONDS = 30 * 60
 REQUEST_TIMEOUT_SECONDS = 30
 
 
@@ -567,39 +665,144 @@ def apply(
 # --- run -------------------------------------------------------------------------------
 
 
+GitHub = httpx.Client | Mapping[str, httpx.Client]
+
+
+def owner_tokens(owners: Iterable[str], default: str, mapping: str) -> dict[str, str]:
+    """The GitHub token for each owner: its own ``owner=token`` entry, else the default.
+
+    Raises ValueError for a malformed entry or an owner left without a token; the message
+    never carries a token value.
+    """
+    specific: dict[str, str] = {}
+    first: dict[str, int] = {}
+    entries = [e for e in mapping.split(",") if e.strip()]
+    for number, entry in enumerate(entries, start=1):
+        owner, sep, token = entry.partition("=")
+        if not sep or not owner.strip() or not token.strip():
+            raise ValueError(
+                f"BACKLOG_SYNC_GITHUB_TOKENS entry {number} is not owner=token"
+            )
+        key, token = owner.strip().lower(), token.strip()  # GitHub owners ignore case
+        if specific.get(key, token) != token:  # entry numbers only: never a value
+            raise ValueError(
+                f"BACKLOG_SYNC_GITHUB_TOKENS entries {first[key]} and {number}"
+                " name one owner twice"
+            )
+        first.setdefault(key, number)
+        specific[key] = token
+    owners = list(owners)
+    if not owners:
+        raise ValueError("no GitHub owners configured")
+    tokens = {o: specific.get(o.lower(), default.strip()) for o in owners}
+    if missing := [o for o, t in tokens.items() if not t]:
+        raise ValueError(f"no GitHub token for owner(s): {', '.join(missing)}")
+    return tokens
+
+
+def owner_groups(
+    gh: GitHub | None, owners: Iterable[str]
+) -> list[tuple[list[str], httpx.Client]]:
+    """Owners grouped by the client (token) that reads them, in owner order."""
+    if gh is None:
+        return []
+    if isinstance(gh, httpx.Client):
+        return [(list(owners), gh)]
+    groups: dict[int, tuple[list[str], httpx.Client]] = {}
+    for owner in owners:
+        client = gh[owner]
+        groups.setdefault(id(client), ([], client))[0].append(owner)
+    return list(groups.values())
+
+
 def collect(
     sources: Iterable[str],
-    gh: httpx.Client | None,
+    gh: GitHub | None,
     sentry: httpx.Client | None,
     owners: list[str],
     org: str,
     report: Report,
     bot_repos: Iterable[str] = (),
+    pace: Callable[[], None] | None = None,
+    issue_pace: Callable[[], None] | None = None,
+    read_deadline: float | None = None,
 ) -> list[Item]:
+    """Read every source. A source (or one owner group of a GitHub source) that fails is
+    logged and skipped; the rest still sync."""
+
     def need(client: httpx.Client | None) -> httpx.Client:
         assert client is not None  # main() refuses to start without the token
         return client
 
-    readers: dict[str, Callable[[], Iterable[Item]]] = {
-        "github": lambda: (
-            github_item(i) for i in github_issues(need(gh), owners, bot_repos)
-        ),
-        "sentry": lambda: (sentry_item(i) for i in sentry_issues(need(sentry), org)),
-        "files": lambda: file_items(need(gh), owners, report),
+    groups = owner_groups(gh, owners)
+    if groups:  # start from another group every hour, so no group is always last
+        turn = int(time.time() // 3600) % len(groups)
+        groups = groups[turn:] + groups[:turn]
+    # one pace per search API for every owner group: the quotas are per GitHub account
+    search_pace = pace or SearchPace(deadline=read_deadline)
+    issues_pace = issue_pace or SearchPace(
+        ISSUE_SEARCH_INTERVAL_SECONDS, deadline=read_deadline
+    )
+    assert groups or not ({"github", "files"} & set(sources))
+    Part = tuple[str | None, Callable[[], Iterable[Item]]]
+
+    def github_part(group: list[str], client: httpx.Client) -> Part:
+        return (
+            ",".join(group),
+            lambda: (
+                github_item(i)
+                for i in github_issues(client, group, bot_repos, issues_pace)
+            ),
+        )
+
+    reported = [False]
+
+    def files_part(group: list[str], client: httpx.Client) -> Part:
+        return ",".join(group), lambda: file_items(
+            client,
+            group,
+            report,
+            search_pace,
+            FileFailures(
+                reported=reported
+            ),  # budget per group, one Sentry event per run
+        )
+
+    readers: dict[str, Callable[[], list[Part]]] = {
+        "github": lambda: [github_part(g, c) for g, c in groups],
+        "sentry": lambda: [
+            (None, lambda: (sentry_item(i) for i in sentry_issues(need(sentry), org)))
+        ],
+        "files": lambda: [files_part(g, c) for g, c in groups],
     }
     items: list[Item] = []
     for source in sources:
-        try:
-            found = list(readers[source]())
-        except httpx.HTTPError as exc:  # a source that is down is skipped, not fatal
-            capture(exc)
-            status = (
-                exc.response.status_code
-                if isinstance(exc, httpx.HTTPStatusError)
-                else None
-            )
-            report.log("error", source=source, kind=type(exc).__name__, status=status)
-            continue
+        found: list[Item] = []
+        for scope, read in readers[source]():
+            try:
+                if read_deadline is not None and time.monotonic() > read_deadline:
+                    raise RunDeadline("read deadline: the source was not read")
+                part = list(read())  # a group that fails midway adds nothing
+            except (
+                httpx.HTTPError
+            ) as exc:  # a source that is down is skipped, not fatal
+                if not isinstance(exc, RunDeadline):  # nothing was sent: no event
+                    capture(exc)
+                status = (
+                    exc.response.status_code
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else None
+                )
+                where = {} if scope is None else {"owners": scope}
+                report.log(
+                    "error",
+                    source=source,
+                    **where,
+                    kind=type(exc).__name__,
+                    status=status,
+                )
+                continue
+            found.extend(part)
         report.log("source", source=source, items=len(found))
         items.extend(found)
     return items
@@ -620,12 +823,39 @@ def heartbeat(env: Mapping[str, str], ok: bool, detail: str) -> None:
         print(json.dumps({"event": "backlog.heartbeat", "ok": False}))
 
 
-def _client(base: str, token: str, **headers: str) -> httpx.Client:
+def read_deadline_hook(
+    deadline: float, clock: Callable[[], float] = time.monotonic
+) -> Callable[[httpx.Request], None]:
+    """A request hook for the source clients: no read request starts after ``deadline``
+    and none may wait past it (its timeouts are capped to the time left)."""
+
+    def check(request: httpx.Request) -> None:
+        left = deadline - clock()
+        if left <= 0:
+            raise RunDeadline(
+                "read deadline: the request was not sent", request=request
+            )
+        timeout = dict(request.extensions.get("timeout") or {})
+        request.extensions["timeout"] = {
+            k: left if v is None else min(v, left) for k, v in timeout.items()
+        }
+
+    return check
+
+
+def _client(
+    base: str,
+    token: str,
+    headers: Mapping[str, str] | None = None,
+    read_deadline: float | None = None,
+) -> httpx.Client:
+    hooks = [] if read_deadline is None else [read_deadline_hook(read_deadline)]
     return httpx.Client(
         base_url=base,
-        headers={"Authorization": f"Bearer {token}", **headers},
+        headers={"Authorization": f"Bearer {token}", **(headers or {})},
         timeout=REQUEST_TIMEOUT_SECONDS,
         follow_redirects=False,  # never forward a token
+        event_hooks={"request": hooks},
     )
 
 
@@ -641,18 +871,20 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     )
     args = parser.parse_args(argv)
     started = time.monotonic()
+    read_deadline = started + READ_DEADLINE_SECONDS
     env = os.environ if env is None else env
     sources = [s for s in args.sources.split(",") if s]
     if not set(sources) <= set(SOURCES):
         parser.error(f"unknown source in {args.sources!r}")
     gh_token = env.get("BACKLOG_SYNC_GITHUB_TOKEN", "").strip()
+    gh_tokens = env.get("BACKLOG_SYNC_GITHUB_TOKENS", "").strip()
     sentry_token = env.get("SENTRY_AUTH_TOKEN", "").strip()
     url, token = (
         env.get("EMPIRE_TASKS_API_URL", "").strip(),
         env.get("BACKLOG_SYNC_TOKEN", "").strip(),
     )
     need = {
-        "BACKLOG_SYNC_GITHUB_TOKEN": gh_token
+        "BACKLOG_SYNC_GITHUB_TOKEN": (gh_token or gh_tokens)
         if {"github", "files"} & set(sources)
         else "-",
         "SENTRY_AUTH_TOKEN": sentry_token if "sentry" in sources else "-",
@@ -687,17 +919,39 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         for r in env.get("BACKLOG_SYNC_BOT_REPOS", AUTOPILOT_REPOS).split(",")
         if r.strip()
     ]
+    gh: dict[str, httpx.Client] | None = None
+    if {"github", "files"} & set(sources):
+        try:
+            tokens = owner_tokens(owners, gh_token, gh_tokens)
+        except ValueError as exc:  # the message names owners, never a token
+            print(
+                json.dumps(
+                    {
+                        "event": "backlog.run",
+                        "error": "missing_config",
+                        "detail": str(exc),
+                    }
+                )
+            )
+            return 2
+        clients = {
+            t: _client(
+                GITHUB_API,
+                t,
+                {"Accept": "application/vnd.github+json"},
+                read_deadline=read_deadline,
+            )
+            for t in dict.fromkeys(tokens.values())
+        }
+        gh = {owner: clients[t] for owner, t in tokens.items()}
     report = Report()
-    gh = (
-        _client(GITHUB_API, gh_token, Accept="application/vnd.github+json")
-        if gh_token
+    sentry = (
+        _client(SENTRY_API, sentry_token, read_deadline=read_deadline)
+        if sentry_token
         else None
     )
-    sentry = _client(SENTRY_API, sentry_token) if sentry_token else None
     tasks = (
-        _client(url, token, **{"X-Empire-Channel": "workflow"})
-        if url and token
-        else None
+        _client(url, token, {"X-Empire-Channel": "workflow"}) if url and token else None
     )
     try:
         items = collect(
@@ -708,6 +962,7 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
             env.get("SENTRY_ORG", "personal-yu0"),
             report,
             bot_repos,
+            read_deadline=read_deadline,
         )
         api = None
         if tasks:
@@ -716,7 +971,8 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
             )
         apply(items, api, report, dry_run=args.dry_run)
     finally:
-        for client in (gh, sentry, tasks):
+        github_clients = list({id(c): c for c in (gh or {}).values()}.values())
+        for client in (*github_clients, sentry, tasks):
             if client is not None:
                 client.close()
     ok = report.counts["errors"] == 0
