@@ -107,6 +107,9 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
   file is synced for that run and the task can flip back the next. (2) The sync filters by owner, not
   by repository: a per-org token also reads that org's public repos, so set one only for an org whose
   public repos may all feed the owner workspace, until a repository allowlist exists.
+  (3) After 3 failed downloads of one file kind in one group that kind stops for the run; the code
+  search returns the same order every hour, so files after 3 persistently broken ones are not read
+  until those are fixed or removed (each failure is logged and the first reaches Sentry).
 - Rollback: delete the Railway service `backlog-sync` (the tasks stay in tasks-api), or remove
   `tasks.task:write` by revoking the delegation (`platform.delegations.revoked_at`).
 
