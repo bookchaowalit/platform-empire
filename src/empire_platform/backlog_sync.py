@@ -416,10 +416,19 @@ def file_items(
         response.raise_for_status()
         for hit in response.json()["items"]:
             repo, path = hit["repository"]["full_name"], hit["path"]
-            raw = gh.get(
-                f"/repos/{repo}/contents/{urllib.parse.quote(path)}",
-                headers={"Accept": "application/vnd.github.raw+json"},
-            )
+            try:  # a download that fails skips that file, like an HTTP error status
+                raw = gh.get(
+                    f"/repos/{repo}/contents/{urllib.parse.quote(path)}",
+                    headers={"Accept": "application/vnd.github.raw+json"},
+                )
+            except httpx.TransportError as exc:
+                report.log(
+                    "error",
+                    source=kind,
+                    where=f"{repo}/{path}",
+                    kind=type(exc).__name__,
+                )
+                continue
             if raw.status_code != 200:
                 report.log(
                     "error", source=kind, where=f"{repo}/{path}", status=raw.status_code
@@ -616,6 +625,7 @@ def owner_tokens(owners: Iterable[str], default: str, mapping: str) -> dict[str,
     never carries a token value.
     """
     specific: dict[str, str] = {}
+    first: dict[str, int] = {}
     entries = [e for e in mapping.split(",") if e.strip()]
     for number, entry in enumerate(entries, start=1):
         owner, sep, token = entry.partition("=")
@@ -624,8 +634,12 @@ def owner_tokens(owners: Iterable[str], default: str, mapping: str) -> dict[str,
                 f"BACKLOG_SYNC_GITHUB_TOKENS entry {number} is not owner=token"
             )
         key, token = owner.strip().lower(), token.strip()  # GitHub owners ignore case
-        if specific.get(key, token) != token:  # names the owner, never a token
-            raise ValueError(f"BACKLOG_SYNC_GITHUB_TOKENS lists owner {key} twice")
+        if specific.get(key, token) != token:  # entry numbers only: never a value
+            raise ValueError(
+                f"BACKLOG_SYNC_GITHUB_TOKENS entries {first[key]} and {number}"
+                " name one owner twice"
+            )
+        first.setdefault(key, number)
         specific[key] = token
     owners = list(owners)
     if not owners:

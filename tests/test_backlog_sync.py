@@ -741,10 +741,13 @@ def test_code_search_is_paced_across_every_owner_client():
 
 
 def test_one_owner_listed_twice_with_different_tokens_is_refused():
-    with pytest.raises(
-        ValueError, match=r"^BACKLOG_SYNC_GITHUB_TOKENS lists owner org twice$"
-    ):
+    message = r"^BACKLOG_SYNC_GITHUB_TOKENS entries 1 and 2 name one owner twice$"
+    with pytest.raises(ValueError, match=message):
         sync.owner_tokens(["org"], default="", mapping="Org=sekrit-1,org=sekrit-2")
+    # a token pasted on the owner side is never echoed back
+    with pytest.raises(ValueError, match=message) as pasted:
+        sync.owner_tokens(["org"], default="d", mapping="sekrit=x,SEKRIT=y")
+    assert "sekrit" not in str(pasted.value).lower()
     # the same token twice is harmless
     assert sync.owner_tokens(["org"], default="", mapping="Org=t,org=t") == {"org": "t"}
 
@@ -764,3 +767,27 @@ def test_issue_search_is_paced_across_every_owner_client():
         issue_pace=lambda: calls.append(1),
     )
     assert len(calls) == 4  # open + closed for each of the two owner groups
+
+
+def test_a_file_download_that_times_out_skips_only_that_file():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            hits = [
+                {
+                    "repository": {"full_name": "a/r"},
+                    "path": f"docs/{name}.md",
+                    "html_url": f"https://github.com/a/r/{name}",
+                }
+                for name in ("slow", "ok")
+            ]
+            return httpx.Response(200, json={"items": hits})
+        if "slow" in request.url.path:
+            raise httpx.ReadTimeout("slow", request=request)
+        return httpx.Response(200, text=INCIDENT)
+
+    report = sync.Report()
+    items = sync.collect(
+        ["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None
+    )
+    assert items  # the file that downloaded still syncs
+    assert report.counts["errors"] == len(sync.FILE_KINDS)  # one per search's slow hit
