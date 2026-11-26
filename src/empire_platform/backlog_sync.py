@@ -709,6 +709,22 @@ def stable_order(item: Item) -> tuple[str, str]:
     return item.key, str(item.body.get("external_url", ""))
 
 
+def resolve_shared_keys(items: list[Item]) -> list[Item]:
+    """One item per key, in read order (the hourly group rotation decides who is synced
+    first); a key two files share is won by ``stable_order``, at its first position."""
+    best: dict[str, Item] = {}
+    for item in items:
+        if item.key not in best or stable_order(item) < stable_order(best[item.key]):
+            best[item.key] = item
+    seen: set[str] = set()
+    out: list[Item] = []
+    for item in items:
+        if item.key not in seen:
+            seen.add(item.key)
+            out.append(best[item.key])
+    return out
+
+
 def owner_groups(
     gh: GitHub | None, owners: Iterable[str]
 ) -> list[tuple[list[str], httpx.Client]]:
@@ -813,7 +829,7 @@ def collect(
                 continue
             found.extend(part)
         report.log("source", source=source, items=len(found))
-        found.sort(key=stable_order)
+        found = resolve_shared_keys(found)
         items.extend(found)
     return items
 

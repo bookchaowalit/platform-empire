@@ -1070,3 +1070,13 @@ def test_a_shared_key_is_won_by_the_same_file_after_its_content_changes():
     )
     assert min([a, b], key=sync.stable_order) is a
     assert min([b, a], key=sync.stable_order) is a
+
+
+def test_resolving_shared_keys_keeps_the_rotated_read_order():
+    b = sync.Item("github", "b/r#1", {"external_url": "https://x/b1"})
+    a = sync.Item("github", "a/r#1", {"external_url": "https://x/a1"})
+    late = sync.Item("incident", "INC-1#1", {"external_url": "https://x/z"})
+    early = sync.Item("incident", "INC-1#1", {"external_url": "https://x/a"})
+    # b's group was read first this hour: it stays first; the shared key keeps its
+    # first position but is won by the stable file
+    assert sync.resolve_shared_keys([b, late, a, early]) == [b, early, a]
