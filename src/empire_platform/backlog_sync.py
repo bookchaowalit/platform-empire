@@ -458,11 +458,10 @@ def file_items(
                     f"/repos/{repo}/contents/{urllib.parse.quote(path)}",
                     headers={"Accept": "application/vnd.github.raw+json"},
                 )
-            except RunDeadline:  # out of read time: keep what was read, stop the group
-                report.log(
-                    "error", source=kind, owners=",".join(owners), kind="RunDeadline"
-                )
-                return
+            except RunDeadline:
+                # out of read time: the whole group stops and adds nothing. A partial read is
+                # never kept: with a key shared by two files it could repoint a task.
+                raise
             except (httpx.TransportError, httpx.DecodingError) as exc:
                 if not failures.reported[0]:
                     failures.reported[0] = True
@@ -703,6 +702,13 @@ def owner_tokens(owners: Iterable[str], default: str, mapping: str) -> dict[str,
     return tokens
 
 
+def stable_order(item: Item) -> tuple[str, str]:
+    """Sort key for one source's items: whatever group was read first, the same file wins
+    a key shared by two files every run (apply() keeps the first item of a key). The
+    source link is stable; the content is not."""
+    return item.key, str(item.body.get("external_url", ""))
+
+
 def owner_groups(
     gh: GitHub | None, owners: Iterable[str]
 ) -> list[tuple[list[str], httpx.Client]]:
@@ -807,11 +813,7 @@ def collect(
                 continue
             found.extend(part)
         report.log("source", source=source, items=len(found))
-        # a fixed order whatever group was read first, so when two files share a key the
-        # same one wins every run (apply() keeps the first item of a key)
-        found.sort(
-            key=lambda i: (i.key, json.dumps(i.body, sort_keys=True, default=str))
-        )
+        found.sort(key=stable_order)
         items.extend(found)
     return items
 

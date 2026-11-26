@@ -1035,32 +1035,6 @@ def test_file_download_failures_reach_sentry_once_per_run(monkeypatch):
     assert len(captured) == 1  # one blocking Sentry flush per run, not per file
 
 
-def test_files_read_before_the_deadline_are_kept():
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/search/code":
-            hits = [
-                {
-                    "repository": {"full_name": "a/r"},
-                    "path": f"docs/{name}.md",
-                    "html_url": f"https://github.com/a/r/{name}",
-                }
-                for name in (
-                    ("first", "late") if "Incident" in request.url.params["q"] else ()
-                )
-            ]
-            return httpx.Response(200, json={"items": hits})
-        if "late" in request.url.path:
-            raise sync.RunDeadline("late", request=request)
-        return httpx.Response(200, text=INCIDENT)
-
-    report = sync.Report()
-    items = sync.collect(
-        ["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None
-    )
-    assert items  # the first file's actions still sync
-    assert report.counts["errors"] == 1  # the cut-off is reported once
-
-
 def test_rotation_never_flips_which_item_wins_a_shared_key(monkeypatch):
     def handler(owner: str):
         def handle(request: httpx.Request) -> httpx.Response:
@@ -1087,3 +1061,12 @@ def test_rotation_never_flips_which_item_wins_a_shared_key(monkeypatch):
             first.setdefault(item.key, json.dumps(item.body, sort_keys=True))
         winners.add(tuple(sorted(first.items())))
     assert len(winners) == 1
+
+
+def test_a_shared_key_is_won_by_the_same_file_after_its_content_changes():
+    a = sync.Item("incident", "INC-1#1", {"external_url": "https://x/a", "title": "z"})
+    b = sync.Item(
+        "incident", "INC-1#1", {"external_url": "https://x/b", "due_date": "1"}
+    )
+    assert min([a, b], key=sync.stable_order) is a
+    assert min([b, a], key=sync.stable_order) is a
