@@ -1033,3 +1033,50 @@ def test_file_download_failures_reach_sentry_once_per_run(monkeypatch):
     )
     assert report.counts["errors"] == 2 * sync.FILE_DOWNLOAD_FAILURES
     assert len(captured) == 1  # one blocking Sentry flush per run, not per file
+
+
+def test_rotation_never_flips_which_item_wins_a_shared_key(monkeypatch):
+    def handler(owner: str):
+        def handle(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/search/code":
+                hit = {
+                    "repository": {"full_name": f"{owner}/r"},
+                    "path": "docs/incident.md",
+                    "html_url": f"https://github.com/{owner}/r/incident",
+                }
+                return httpx.Response(200, json={"items": [hit]})
+            return httpx.Response(200, text=INCIDENT)
+
+        return handle
+
+    clients = {"a": mock(handler("a")), "b": mock(handler("b"))}
+    winners = set()
+    for hour in (0, 1):
+        monkeypatch.setattr(sync.time, "time", lambda h=hour: h * 3600.0 + 60)
+        items = sync.collect(
+            ["files"], clients, None, ["a", "b"], "o", sync.Report(), pace=lambda: None
+        )
+        first = {}
+        for item in items:
+            first.setdefault(item.key, json.dumps(item.body, sort_keys=True))
+        winners.add(tuple(sorted(first.items())))
+    assert len(winners) == 1
+
+
+def test_a_shared_key_is_won_by_the_same_file_after_its_content_changes():
+    a = sync.Item("incident", "INC-1#1", {"external_url": "https://x/a", "title": "z"})
+    b = sync.Item(
+        "incident", "INC-1#1", {"external_url": "https://x/b", "due_date": "1"}
+    )
+    assert min([a, b], key=sync.stable_order) is a
+    assert min([b, a], key=sync.stable_order) is a
+
+
+def test_resolving_shared_keys_keeps_the_rotated_read_order():
+    b = sync.Item("github", "b/r#1", {"external_url": "https://x/b1"})
+    a = sync.Item("github", "a/r#1", {"external_url": "https://x/a1"})
+    late = sync.Item("incident", "INC-1#1", {"external_url": "https://x/z"})
+    early = sync.Item("incident", "INC-1#1", {"external_url": "https://x/a"})
+    # b's group was read first this hour: it stays first; the shared key keeps its
+    # first position but is won by the stable file
+    assert sync.resolve_shared_keys([b, late, a, early]) == [b, early, a]

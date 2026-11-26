@@ -41,8 +41,8 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
 | `EMPIRE_TASKS_API_URL` | same as `recurring-gen` |
 | `BACKLOG_SYNC_TOKEN` | minted for automation `backlog-sync` (owner action), then renewed by `token-rotate` once the target below is in `contracts/automations/v1/deployments.json` |
 | `BACKLOG_SYNC_GITHUB_TOKEN` | fine-grained PAT, read-only Issues + Contents + Metadata on every owner org (owner action) |
-| `BACKLOG_SYNC_GITHUB_TOKENS` | `owner=token,owner=token`: one fine-grained PAT per org, because a fine-grained PAT covers a single resource owner. Read-only Issues + Contents + Metadata, all repositories of that owner. Owners without an entry use `BACKLOG_SYNC_GITHUB_TOKEN`; an owner with neither stops the run with `missing_config` (exit 2). Source values: Infisical `/github` `BACKLOG_SYNC_GITHUB_TOKEN_<ORG>` (owner action) |
-| `BACKLOG_SYNC_GITHUB_OWNERS` | `bookchaowalit` plus every `bookchaowalit-*` org; never `Happy-Teeth` |
+| `BACKLOG_SYNC_GITHUB_TOKENS` | `owner=token,owner=token`: one fine-grained PAT per org, because a fine-grained PAT covers a single resource owner. Read-only Issues + Contents + Metadata on **only the repositories approved to feed the owner workspace** ("Only select repositories"), never "All repositories": a per-org token reaches private repos, and the sync copies titles and links into the owner workspace without a per-repo check. Never issue one for `bookchaowalit-freelance` or any repo that holds client work (client data stays in its own workspace). Owners without an entry use `BACKLOG_SYNC_GITHUB_TOKEN`; an owner with neither stops the run with `missing_config` (exit 2). Source values: Infisical `/github` `BACKLOG_SYNC_GITHUB_TOKEN_<ORG>` (owner action) |
+| `BACKLOG_SYNC_GITHUB_OWNERS` | `bookchaowalit` plus the `bookchaowalit-*` orgs; never `Happy-Teeth`. A per-org token in `BACKLOG_SYNC_GITHUB_TOKENS` is limited to selected repositories (above); orgs that hold client work are read only through public repos with the default token, so the default `BACKLOG_SYNC_GITHUB_TOKEN` must have resource owner `bookchaowalit` (the personal account), never a client or `bookchaowalit-freelance` org |
 | `BACKLOG_SYNC_BOT_REPOS` | repos that run the autopilot (default `bookchaowalit-website/productivity-tracking-web`); add one when Wave 6 adds a repo |
 | `SENTRY_AUTH_TOKEN` | Infisical `/sentry` (reads issues; checked 2026-10-23) |
 | `SENTRY_ORG` | `personal-yu0` |
@@ -99,6 +99,9 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
   each capped read timeout could still pass the deadline: httpx has no whole-request wall clock. Not
   fixed because GitHub and Sentry answer small JSON pages; a fix would stream bodies against a
   monotonic budget.
+- **Known gap (2026-11-26): a group cut by the read deadline adds nothing.** Items already parsed in
+  that group are dropped rather than kept, on purpose: a partial read could repoint a task whose key
+  two files share. The hourly group rotation gives every group the first slot in turn.
 - Rollback: delete the Railway service `backlog-sync` (the tasks stay in tasks-api), or remove
   `tasks.task:write` by revoking the delegation (`platform.delegations.revoked_at`).
 
