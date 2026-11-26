@@ -791,3 +791,45 @@ def test_a_file_download_that_times_out_skips_only_that_file():
     )
     assert items  # the file that downloaded still syncs
     assert report.counts["errors"] == len(sync.FILE_KINDS)  # one per search's slow hit
+
+
+def test_file_downloads_stop_after_repeated_failures_and_decode_errors_skip_one(
+    monkeypatch,
+):
+    captured = []
+    monkeypatch.setattr(sync, "capture", captured.append)
+    downloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            hits = [
+                {
+                    "repository": {"full_name": "a/r"},
+                    "path": f"docs/{name}.md",
+                    "html_url": f"https://github.com/a/r/{name}",
+                }
+                for name in (
+                    ("ok", "s1", "s2", "s3", "s4")
+                    if "Incident" in request.url.params["q"]
+                    else ("bad",)
+                )
+            ]
+            return httpx.Response(200, json={"items": hits})
+        downloads.append(request.url.path)
+        if "bad" in request.url.path:  # a corrupt gzip body: DecodingError
+            return httpx.Response(
+                200, content=b"not gzip", headers={"Content-Encoding": "gzip"}
+            )
+        if "/s" in request.url.path:
+            raise httpx.ReadTimeout("slow", request=request)
+        return httpx.Response(200, text=INCIDENT)
+
+    report = sync.Report()
+    items = sync.collect(
+        ["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None
+    )
+    assert items  # "ok" still syncs after the decode error
+    # bad + ok + 2 timeouts; then downloads stop for the rest of the run
+    assert len(downloads) == 2 + sync.FILE_DOWNLOAD_FAILURES - 1
+    assert report.counts["errors"] == sync.FILE_DOWNLOAD_FAILURES
+    assert captured  # failures still reach Sentry

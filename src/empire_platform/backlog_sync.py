@@ -400,14 +400,39 @@ class SearchPace:
         self.last = self.clock()
 
 
+# A file download that fails (timeout, reset, corrupt body) skips that file. After this many
+# in one run the files source stops downloading, so 30 s timeouts cannot eat the run deadline
+# and starve the tasks-api phase (90 timeouts would spend all 45 minutes).
+FILE_DOWNLOAD_FAILURES = 3
+
+
+@dataclass
+class FileFailures:
+    """File download failures so far in this run, shared by every owner group."""
+
+    limit: int = FILE_DOWNLOAD_FAILURES
+    count: int = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.count >= self.limit
+
+
 def file_items(
     gh: httpx.Client,
     owners: Iterable[str],
     report: Report,
     pace: Callable[[], None] = lambda: None,
+    failures: FileFailures | None = None,
 ) -> Iterator[Item]:
     users = " ".join(f"user:{o}" for o in owners)
+    failures = failures if failures is not None else FileFailures()
     for kind, (terms, parse) in FILE_KINDS.items():
+        if failures.exhausted:
+            report.log(
+                "files_stopped", owners=",".join(owners), failures=failures.count
+            )
+            return
         pace()
         response = gh.get(
             "/search/code",
@@ -415,13 +440,20 @@ def file_items(
         )
         response.raise_for_status()
         for hit in response.json()["items"]:
+            if failures.exhausted:
+                report.log(
+                    "files_stopped", owners=",".join(owners), failures=failures.count
+                )
+                return
             repo, path = hit["repository"]["full_name"], hit["path"]
             try:  # a download that fails skips that file, like an HTTP error status
                 raw = gh.get(
                     f"/repos/{repo}/contents/{urllib.parse.quote(path)}",
                     headers={"Accept": "application/vnd.github.raw+json"},
                 )
-            except httpx.TransportError as exc:
+            except (httpx.TransportError, httpx.DecodingError) as exc:
+                capture(exc)
+                failures.count += 1
                 report.log(
                     "error",
                     source=kind,
@@ -699,8 +731,12 @@ def collect(
             ),
         )
 
+    file_failures = FileFailures()  # one budget for the whole run
+
     def files_part(group: list[str], client: httpx.Client) -> Part:
-        return ",".join(group), lambda: file_items(client, group, report, search_pace)
+        return ",".join(group), lambda: file_items(
+            client, group, report, search_pace, file_failures
+        )
 
     readers: dict[str, Callable[[], list[Part]]] = {
         "github": lambda: [github_part(g, c) for g, c in groups],
