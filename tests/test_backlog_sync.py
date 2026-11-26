@@ -829,9 +829,9 @@ def test_file_downloads_stop_after_repeated_failures_and_decode_errors_skip_one(
         ["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None
     )
     assert items  # "ok" still syncs after the decode error
-    # bad + ok + 2 timeouts; then downloads stop for the rest of the run
-    assert len(downloads) == 2 + sync.FILE_DOWNLOAD_FAILURES - 1
-    assert report.counts["errors"] == sync.FILE_DOWNLOAD_FAILURES
+    # outcome reviews: bad (1 failure); incidents: ok + 3 timeouts, then that kind stops
+    assert len(downloads) == 2 + sync.FILE_DOWNLOAD_FAILURES
+    assert report.counts["errors"] == 1 + sync.FILE_DOWNLOAD_FAILURES
     assert captured  # failures still reach Sentry
 
 
@@ -867,7 +867,8 @@ def test_a_group_out_of_download_budget_never_stops_the_next_group():
         report,
         pace=lambda: None,
     )
-    assert downloads.count("a") == sync.FILE_DOWNLOAD_FAILURES
+    # every file kind of group a spends its own budget, then stops
+    assert downloads.count("a") == sync.FILE_DOWNLOAD_FAILURES * len(sync.FILE_KINDS)
     assert "b" in downloads
     assert items
 
@@ -953,7 +954,7 @@ def test_file_download_5xx_counts_toward_the_group_failure_budget():
     report = sync.Report()
     sync.collect(["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None)
     # f0 is a 404 (skipped, not counted); f1-f3 are 503s and exhaust the budget
-    assert len(downloads) == 1 + sync.FILE_DOWNLOAD_FAILURES
+    assert len(downloads) == (1 + sync.FILE_DOWNLOAD_FAILURES) * len(sync.FILE_KINDS)
 
 
 def test_groups_skipped_by_the_read_deadline_never_reach_sentry(monkeypatch):
@@ -1031,7 +1032,9 @@ def test_file_download_failures_reach_sentry_once_per_run(monkeypatch):
         report,
         pace=lambda: None,
     )
-    assert report.counts["errors"] == 2 * sync.FILE_DOWNLOAD_FAILURES
+    assert report.counts["errors"] == (
+        2 * sync.FILE_DOWNLOAD_FAILURES * len(sync.FILE_KINDS)
+    )
     assert len(captured) == 1  # one blocking Sentry flush per run, not per file
 
 
@@ -1095,3 +1098,29 @@ def test_an_owner_that_is_not_a_github_login_is_refused_without_echo(capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["detail"] == "BACKLOG_SYNC_GITHUB_OWNERS entry 2 is not a GitHub owner"
     assert "sekrit" not in json.dumps(out)
+
+
+def test_broken_outcome_reviews_never_stop_the_incident_search():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            incident = "Incident" in request.url.params["q"]
+            names = ("inc",) if incident else ("r1", "r2", "r3", "r4")
+            hits = [
+                {
+                    "repository": {"full_name": "a/r"},
+                    "path": f"docs/{n}.md",
+                    "html_url": f"https://github.com/a/r/{n}",
+                }
+                for n in names
+            ]
+            return httpx.Response(200, json={"items": hits})
+        if "/docs/r" in request.url.path:
+            return httpx.Response(503)
+        return httpx.Response(200, text=INCIDENT)
+
+    report = sync.Report()
+    items = sync.collect(
+        ["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None
+    )
+    assert items  # the incident file still syncs: the budget is per file kind
+    assert report.counts["errors"] == sync.FILE_DOWNLOAD_FAILURES

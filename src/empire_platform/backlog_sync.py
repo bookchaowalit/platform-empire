@@ -405,8 +405,8 @@ class SearchPace:
 
 
 # A file download that fails (timeout, reset, corrupt body) skips that file. After this many
-# in one owner group the group stops downloading, so 30 s timeouts cannot eat the run deadline
-# (13 groups x 3 x 30 s stays under 20 minutes); other groups keep their own budget.
+# for one file kind in one owner group, that kind stops downloading, so 30 s timeouts cannot
+# pile up (the read deadline bounds the rest); other kinds and groups keep their own budget.
 FILE_DOWNLOAD_FAILURES = 3
 
 
@@ -435,11 +435,9 @@ def file_items(
     users = " ".join(f"user:{o}" for o in owners)
     failures = failures if failures is not None else FileFailures()
     for kind, (terms, parse) in FILE_KINDS.items():
-        if failures.exhausted:
-            report.log(
-                "files_stopped", owners=",".join(owners), failures=failures.count
-            )
-            return
+        failures.count = (
+            0  # a budget per file kind: broken reviews never block incidents
+        )
         pace()
         response = gh.get(
             "/search/code",
@@ -451,7 +449,7 @@ def file_items(
                 report.log(
                     "files_stopped", owners=",".join(owners), failures=failures.count
                 )
-                return
+                break  # next file kind
             repo, path = hit["repository"]["full_name"], hit["path"]
             try:  # a download that fails skips that file, like an HTTP error status
                 raw = gh.get(
