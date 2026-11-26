@@ -668,6 +668,8 @@ def apply(
 
 
 GitHub = httpx.Client | Mapping[str, httpx.Client]
+# A GitHub user or organisation login: letters, digits and single inner hyphens, 1-39 chars.
+GITHUB_OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")
 
 
 def owner_tokens(owners: Iterable[str], default: str, mapping: str) -> dict[str, str]:
@@ -696,6 +698,13 @@ def owner_tokens(owners: Iterable[str], default: str, mapping: str) -> dict[str,
     owners = list(owners)
     if not owners:
         raise ValueError("no GitHub owners configured")
+    for number, owner in enumerate(
+        owners, start=1
+    ):  # entry numbers only: never a value
+        if not GITHUB_OWNER.fullmatch(owner):
+            raise ValueError(
+                f"BACKLOG_SYNC_GITHUB_OWNERS entry {number} is not a GitHub owner"
+            )
     tokens = {o: specific.get(o.lower(), default.strip()) for o in owners}
     if missing := [o for o, t in tokens.items() if not t]:
         raise ValueError(f"no GitHub token for owner(s): {', '.join(missing)}")
