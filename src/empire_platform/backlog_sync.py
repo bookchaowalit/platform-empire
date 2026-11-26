@@ -455,6 +455,8 @@ def file_items(
                     f"/repos/{repo}/contents/{urllib.parse.quote(path)}",
                     headers={"Accept": "application/vnd.github.raw+json"},
                 )
+            except RunDeadline:
+                raise  # out of read time: the whole group stops, not just this file
             except (httpx.TransportError, httpx.DecodingError) as exc:
                 capture(exc)
                 failures.count += 1
@@ -804,12 +806,39 @@ def heartbeat(env: Mapping[str, str], ok: bool, detail: str) -> None:
         print(json.dumps({"event": "backlog.heartbeat", "ok": False}))
 
 
-def _client(base: str, token: str, **headers: str) -> httpx.Client:
+def read_deadline_hook(
+    deadline: float, clock: Callable[[], float] = time.monotonic
+) -> Callable[[httpx.Request], None]:
+    """A request hook for the source clients: no read request starts after ``deadline``
+    and none may wait past it (its timeouts are capped to the time left)."""
+
+    def check(request: httpx.Request) -> None:
+        left = deadline - clock()
+        if left <= 0:
+            raise RunDeadline(
+                "read deadline: the request was not sent", request=request
+            )
+        timeout = dict(request.extensions.get("timeout") or {})
+        request.extensions["timeout"] = {
+            k: left if v is None else min(v, left) for k, v in timeout.items()
+        }
+
+    return check
+
+
+def _client(
+    base: str,
+    token: str,
+    headers: Mapping[str, str] | None = None,
+    read_deadline: float | None = None,
+) -> httpx.Client:
+    hooks = [] if read_deadline is None else [read_deadline_hook(read_deadline)]
     return httpx.Client(
         base_url=base,
-        headers={"Authorization": f"Bearer {token}", **headers},
+        headers={"Authorization": f"Bearer {token}", **(headers or {})},
         timeout=REQUEST_TIMEOUT_SECONDS,
         follow_redirects=False,  # never forward a token
+        event_hooks={"request": hooks},
     )
 
 
@@ -825,6 +854,7 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     )
     args = parser.parse_args(argv)
     started = time.monotonic()
+    read_deadline = started + READ_DEADLINE_SECONDS
     env = os.environ if env is None else env
     sources = [s for s in args.sources.split(",") if s]
     if not set(sources) <= set(SOURCES):
@@ -888,16 +918,23 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
             )
             return 2
         clients = {
-            t: _client(GITHUB_API, t, Accept="application/vnd.github+json")
+            t: _client(
+                GITHUB_API,
+                t,
+                {"Accept": "application/vnd.github+json"},
+                read_deadline=read_deadline,
+            )
             for t in dict.fromkeys(tokens.values())
         }
         gh = {owner: clients[t] for owner, t in tokens.items()}
     report = Report()
-    sentry = _client(SENTRY_API, sentry_token) if sentry_token else None
-    tasks = (
-        _client(url, token, **{"X-Empire-Channel": "workflow"})
-        if url and token
+    sentry = (
+        _client(SENTRY_API, sentry_token, read_deadline=read_deadline)
+        if sentry_token
         else None
+    )
+    tasks = (
+        _client(url, token, {"X-Empire-Channel": "workflow"}) if url and token else None
     )
     try:
         items = collect(
@@ -908,7 +945,7 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
             env.get("SENTRY_ORG", "personal-yu0"),
             report,
             bot_repos,
-            read_deadline=started + READ_DEADLINE_SECONDS,
+            read_deadline=read_deadline,
         )
         api = None
         if tasks:

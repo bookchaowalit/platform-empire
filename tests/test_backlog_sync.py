@@ -892,3 +892,42 @@ def test_sources_read_past_the_read_deadline_are_skipped(monkeypatch):
         ["github"], mock(handler), None, ["a"], "o", report, read_deadline=50.0
     )
     assert report.counts["errors"] == 1
+
+
+def test_every_read_request_checks_the_read_deadline_and_caps_its_timeout():
+    now = [0.0]
+    timeouts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts.append(request.extensions["timeout"]["read"])
+        return httpx.Response(200, json={"items": []})
+
+    client = httpx.Client(
+        base_url="https://api.test",
+        transport=httpx.MockTransport(handler),
+        timeout=30,
+        event_hooks={"request": [sync.read_deadline_hook(100.0, lambda: now[0])]},
+    )
+    now[0] = 90.0
+    client.get("/search/code")
+    assert timeouts == [10.0]  # never past the deadline
+    now[0] = 101.0
+    with pytest.raises(sync.RunDeadline):
+        client.get("/search/code")
+    assert len(timeouts) == 1  # the late request was never sent
+
+
+def test_a_file_download_past_the_read_deadline_stops_the_group(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            hit = {
+                "repository": {"full_name": "a/r"},
+                "path": "docs/f.md",
+                "html_url": "https://github.com/a/r/f",
+            }
+            return httpx.Response(200, json={"items": [hit]})
+        raise sync.RunDeadline("late", request=request)
+
+    report = sync.Report()
+    sync.collect(["files"], mock(handler), None, ["a"], "o", report, pace=lambda: None)
+    assert report.counts["errors"] == 1  # the group, not one error per file
