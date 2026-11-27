@@ -3,7 +3,9 @@
 repo นี้คือ **empire-platform**: monorepo ของ control plane กลางของ Solo Empire (identity, workspace, delegation, authorization decision point, Tasks API, outbox → Empire Graph) และ cron jobs ที่รันบน image เดียวกันใน Railway project `platform-empire`
 ไม่มีหน้า UI ใน repo นี้; หน้าจอ tasks อยู่ที่ `life-dashboard-web` (อ้างใน `PRODUCT.md`)
 
-## As-Is (จากโค้ดวันนี้, `origin/main` `686089a`)
+Last reviewed: 2026-11-27 · commit `3804c90`
+
+## As-Is (จากโค้ดวันนี้)
 
 ### A. เส้นทางการเขียนหนึ่งครั้ง (ทุก write ใน tasks cell)
 
@@ -68,6 +70,12 @@ cell เช่น `solo-decisions` เรียก platform ผ่าน HTTP �
 
 Sources: `services/platform/platform_api/routes.py`, `src/empire_platform/cells.py`, `services/platform/migrations/0006_cell_executions.sql`, `0007_reconcile_cell_executions.sql`
 
+### D. Catalog และ tenancy บน tasks-api (เพิ่มตั้งแต่ SPEC-002)
+
+`tasks-api` ลงทะเบียน catalog routes (`/v1/catalog/*`: domains, values, metric definitions เป็น node ของ cell `platform` ใน graph) ผ่าน `register_catalog` ใน process เดียวกับ tasks; ตาราง/ฟังก์ชันอยู่ใน `services/graph/migrations/2006_catalog.sql`–`2013`; signup/tenancy ของ platform อยู่ใน `services/platform/migrations/0009_tenancy.sql`–`0011`. ส่วน producer ของ cell อื่น, backfill และ export เข้า lake ยังไม่ยืนยันจากโค้ดใน repo นี้ [ต้องยืนยัน]
+
+Sources: `services/tasks/tasks_api/catalog.py`, `services/tasks/tasks_api/app.py` (`register_catalog`), `services/graph/migrations/2006_catalog.sql`, `services/platform/migrations/0009_tenancy.sql`, `specs/002-catalog-domains-values-metrics/spec.md`
+
 ## To-Be (จากเอกสารใน repo และ spec กลางเท่านั้น)
 
 | To-Be item | ที่มา |
@@ -78,6 +86,7 @@ Sources: `services/platform/platform_api/routes.py`, `src/empire_platform/cells.
 | Hosted restore drill บน Neon isolated branch (ยัง "not yet verified") และ RPO/RTO ที่ owner อนุมัติ | [`docs/runbooks/recovery.md`](../runbooks/recovery.md) |
 | Purge archived tasks หลัง 365 วันเป็น job ที่ต้องมี human approval ("does not exist yet") | [`docs/policies/task-deletion.md`](../policies/task-deletion.md) |
 | Measures: outbox lag threshold และ backlog health ยังเป็น `[ต้องยืนยัน]`; 5xx/p95 ของ tasks-api | `PRODUCT.md` § Measures |
+| Catalog rollout ขั้น 3–5 (producer ของ `life-goals-api`/`life-time-api`, backfill `in-domain`, export รายวันเข้า lake) | `specs/002-catalog-domains-values-metrics/spec.md` Rollout (status accepted 2026-11-22); commit `66aa8a8` เพิ่ม token `catalog-export` แล้ว |
 | Promote signing key ใหม่และเอา `TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM` ออกเมื่อ token ทั้งหมดเป็น key ใหม่ | ops record: hosted-shared-services (2026-11-03) |
 
 ```mermaid
@@ -89,6 +98,19 @@ flowchart LR
 ```
 
 Sources: เอกสารในตารางด้านบน
+
+## Gap
+
+| ID | As-Is → To-Be | Status | Owner | Evidence |
+|---|---|---|---|---|
+| G1 | ไม่มี `workflow` schema / agent approval-budget → Phase 2 agent execution | decide | owner | architecture-docs spec 2026-10-09 §8 (status `proposed`); Open questions |
+| G2 | tenant isolation/invite ยังไม่ครบ → Phase 4 SaaS readiness | todo | claude | spec 2026-10-09 §8; มี `0009_tenancy.sql`–`0011` เป็นส่วนแรก |
+| G3 | `/v1/authz/decide` shadow mirror → identity ย้ายไป `platform-identity` | doing | claude | `services/platform/platform_api/identity_shadow.py` |
+| G4 | ยังไม่เคย restore drill บน Neon → drill + RPO/RTO ที่ owner อนุมัติ | decide | owner | `docs/runbooks/recovery.md` ("not yet verified") |
+| G5 | ไม่มี job purge archived tasks → purge หลัง 365 วันพร้อม human approval | todo | claude | `docs/policies/task-deletion.md` |
+| G6 | catalog routes + migrations 2006–2013 อยู่ในโค้ด → producers, backfill, daily export เข้า lake | doing | claude | `specs/002-catalog-domains-values-metrics/spec.md` Rollout 3–5; commit `66aa8a8` |
+| G7 | ยังมี `TASKS_API_JWT_NEXT_PUBLIC_KEY_PEM` → promote key ใหม่แล้วเอาออก | todo | owner | ops record: hosted-shared-services (2026-11-03) |
+| G8 | outbox lag / backlog health ยังไม่มี threshold → measures ที่กำหนด | decide | owner | `PRODUCT.md` Measures ([ต้องยืนยัน]) |
 
 ## Open questions
 
