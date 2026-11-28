@@ -56,8 +56,8 @@ export default defineRailway(() => {
 
   // Hourly cron run (EMPIRE_SERVICE=backlog-sync): GitHub issues, Sentry errors, outcome reviews
   // and incidents -> one task each (empire_platform.backlog_sync). 5 * * * * UTC. All three
-  // sources since 2026-10-25 (read-only fine-grained BACKLOG_SYNC_GITHUB_TOKEN), see
-  // docs/runbooks/backlog-sync.md.
+  // sources since 2026-10-25 (read-only fine-grained BACKLOG_SYNC_GITHUB_TOKEN; GITHUB_APP_ID +
+  // GITHUB_APP_PRIVATE_KEY replace it once the GitHub App exists), see docs/runbooks/backlog-sync.md.
   const backlogSync = service("backlog-sync", {
     source: github,
     startCommand: "empire-backlog-sync",

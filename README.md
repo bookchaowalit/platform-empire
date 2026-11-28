@@ -64,7 +64,10 @@ incident reviews become one task each through
 only sync-owned fields that differ (title, link, labels, project, GitHub state), so a
 re-run writes nothing; priority and due date are set only on create. It runs as the
 `backlog-sync` automation (`tasks.task:read`, `tasks.task:write`,
-`tasks.archive:write`). Host, schedule and setup: [runbook](docs/runbooks/backlog-sync.md)
+`tasks.archive:write`). GitHub reads use a read-only PAT (`BACKLOG_SYNC_GITHUB_TOKEN(S)`) or,
+when `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are set, a GitHub App installation token per
+owner down-scoped to `issues`, `contents` and `metadata` read (`src/empire_platform/github_app.py`).
+Host, schedule and setup: [runbook](docs/runbooks/backlog-sync.md)
 and architecture-docs ADR-0006.
 
 ## Stripe reconcile

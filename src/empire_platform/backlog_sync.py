@@ -31,6 +31,10 @@ Environment (nothing secret is printed):
     BACKLOG_SYNC_GITHUB_TOKENS  comma list of owner=token (a fine-grained PAT covers one
                                 owner, so each org gets its own read-only token)
     BACKLOG_SYNC_GITHUB_OWNERS  comma list (default: bookchaowalit)
+    GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY
+                                GitHub App (PEM, PKCS#1 or PKCS#8): when both are set they
+                                replace both PAT variables; each owner gets an installation
+                                token down-scoped to issues, contents and metadata read
     BACKLOG_SYNC_BOT_REPOS      repos whose github-actions[bot] issues count (autopilot repos)
     SENTRY_AUTH_TOKEN, SENTRY_ORG (default personal-yu0)
     EMPIRE_TASKS_API_URL, BACKLOG_SYNC_TOKEN   (writes; optional in --dry-run)
@@ -54,8 +58,13 @@ from typing import Any
 import httpx
 
 from ._sentry import capture
+from .github_app import HEADERS as GITHUB_APP_HEADERS
+from .github_app import GitHubApp, GitHubAppError, InstallationAuth, app_from_env
 
 GITHUB_API = "https://api.github.com"
+# What a GitHub App installation token is down-scoped to: issue search, code search and file
+# downloads, nothing else (the App itself may hold more for other consumers).
+GITHUB_APP_PERMISSIONS = {"issues": "read", "contents": "read", "metadata": "read"}
 SENTRY_API = "https://us.sentry.io/api/0"  # the org's region; the global host proxies and timed out
 SOURCES = ("github", "sentry", "files")
 # Labels P0..P3 (runbook) -> tasks-api priority 1..4 (1 is the highest; 3 is the default).
@@ -373,7 +382,8 @@ def _is_template(path: str, markdown: str) -> bool:
 
 
 # GitHub code search allows 10 requests a minute per account, shared by every PAT of that
-# account. With one token per org the files source makes 2 searches per owner group (26 for
+# account (with the GitHub App the quota is per installation; the shared pace is kept, so it
+# stays within either). With one token per org the files source makes 2 searches per owner group (26 for
 # 13 owners), so searches are spaced across all clients; 13 owners add about 3 minutes.
 CODE_SEARCH_INTERVAL_SECONDS = 60 / 9
 # Issue search allows 30 a minute per account: 2+ searches per owner group (26+ for 13).
@@ -670,6 +680,18 @@ GitHub = httpx.Client | Mapping[str, httpx.Client]
 GITHUB_OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")
 
 
+def check_owners(owners: list[str]) -> None:
+    """Raises ValueError unless every owner is a GitHub login; the message carries entry
+    numbers only, never a value (a mistyped owner may be a pasted token)."""
+    if not owners:
+        raise ValueError("no GitHub owners configured")
+    for number, owner in enumerate(owners, start=1):
+        if not GITHUB_OWNER.fullmatch(owner):
+            raise ValueError(
+                f"BACKLOG_SYNC_GITHUB_OWNERS entry {number} is not a GitHub owner"
+            )
+
+
 def owner_tokens(owners: Iterable[str], default: str, mapping: str) -> dict[str, str]:
     """The GitHub token for each owner: its own ``owner=token`` entry, else the default.
 
@@ -694,15 +716,7 @@ def owner_tokens(owners: Iterable[str], default: str, mapping: str) -> dict[str,
         first.setdefault(key, number)
         specific[key] = token
     owners = list(owners)
-    if not owners:
-        raise ValueError("no GitHub owners configured")
-    for number, owner in enumerate(
-        owners, start=1
-    ):  # entry numbers only: never a value
-        if not GITHUB_OWNER.fullmatch(owner):
-            raise ValueError(
-                f"BACKLOG_SYNC_GITHUB_OWNERS entry {number} is not a GitHub owner"
-            )
+    check_owners(owners)
     tokens = {o: specific.get(o.lower(), default.strip()) for o in owners}
     if missing := [o for o, t in tokens.items() if not t]:
         raise ValueError(f"no GitHub token for owner(s): {', '.join(missing)}")
@@ -823,6 +837,8 @@ def collect(
                 status = (
                     exc.response.status_code
                     if isinstance(exc, httpx.HTTPStatusError)
+                    else exc.status  # minting the App token for this group failed
+                    if isinstance(exc, GitHubAppError)
                     else None
                 )
                 where = {} if scope is None else {"owners": scope}
@@ -892,6 +908,26 @@ def _client(
     )
 
 
+def app_clients(
+    app: GitHubApp, owners: Iterable[str], read_deadline: float | None = None
+) -> dict[str, httpx.Client]:
+    """One GitHub client per owner, each sending that owner's installation token (minted on
+    the first request, re-minted when it is due). Every owner is its own group: an
+    installation token reads one account only."""
+    hooks = [] if read_deadline is None else [read_deadline_hook(read_deadline)]
+    return {
+        owner: httpx.Client(
+            base_url=GITHUB_API,
+            headers=GITHUB_APP_HEADERS,
+            auth=InstallationAuth(app, owner),
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            follow_redirects=False,  # never forward a token
+            event_hooks={"request": hooks},
+        )
+        for owner in owners
+    }
+
+
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="empire-backlog-sync", description=__doc__.splitlines()[0]
@@ -911,13 +947,18 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         parser.error(f"unknown source in {args.sources!r}")
     gh_token = env.get("BACKLOG_SYNC_GITHUB_TOKEN", "").strip()
     gh_tokens = env.get("BACKLOG_SYNC_GITHUB_TOKENS", "").strip()
+    # the GitHub App wins over the PATs when both of its variables are set
+    use_app = bool(
+        env.get("GITHUB_APP_ID", "").strip()
+        or env.get("GITHUB_APP_PRIVATE_KEY", "").strip()
+    )
     sentry_token = env.get("SENTRY_AUTH_TOKEN", "").strip()
     url, token = (
         env.get("EMPIRE_TASKS_API_URL", "").strip(),
         env.get("BACKLOG_SYNC_TOKEN", "").strip(),
     )
     need = {
-        "BACKLOG_SYNC_GITHUB_TOKEN": (gh_token or gh_tokens)
+        "BACKLOG_SYNC_GITHUB_TOKEN": (gh_token or gh_tokens or use_app)
         if {"github", "files"} & set(sources)
         else "-",
         "SENTRY_AUTH_TOKEN": sentry_token if "sentry" in sources else "-",
@@ -953,7 +994,32 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         if r.strip()
     ]
     gh: dict[str, httpx.Client] | None = None
-    if {"github", "files"} & set(sources):
+    app_client: httpx.Client | None = None
+    if {"github", "files"} & set(sources) and use_app:
+        app_client = httpx.Client(
+            base_url=GITHUB_API,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            follow_redirects=False,  # never forward the App JWT
+            event_hooks={"request": [read_deadline_hook(read_deadline)]},
+        )
+        try:
+            check_owners(owners)
+            app = app_from_env(env, GITHUB_APP_PERMISSIONS, app_client)
+        except ValueError as exc:  # names a variable or an entry number, never a value
+            app_client.close()
+            print(
+                json.dumps(
+                    {
+                        "event": "backlog.run",
+                        "error": "missing_config",
+                        "detail": str(exc),
+                    }
+                )
+            )
+            return 2
+        assert app is not None  # use_app: at least one App variable is set
+        gh = app_clients(app, owners, read_deadline)
+    elif {"github", "files"} & set(sources):
         try:
             tokens = owner_tokens(owners, gh_token, gh_tokens)
         except ValueError as exc:  # the message names owners, never a token
@@ -1005,7 +1071,7 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         apply(items, api, report, dry_run=args.dry_run)
     finally:
         github_clients = list({id(c): c for c in (gh or {}).values()}.values())
-        for client in (*github_clients, sentry, tasks):
+        for client in (*github_clients, app_client, sentry, tasks):
             if client is not None:
                 client.close()
     ok = report.counts["errors"] == 0

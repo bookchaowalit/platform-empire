@@ -42,6 +42,7 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
 | `BACKLOG_SYNC_TOKEN` | minted for automation `backlog-sync` (owner action), then renewed by `token-rotate` once the target below is in `contracts/automations/v1/deployments.json` |
 | `BACKLOG_SYNC_GITHUB_TOKEN` | fine-grained PAT, read-only Issues + Contents + Metadata on every owner org (owner action) |
 | `BACKLOG_SYNC_GITHUB_TOKENS` | `owner=token,owner=token`: one fine-grained PAT per org, because a fine-grained PAT covers a single resource owner. Read-only Issues + Contents + Metadata on **only the repositories approved to feed the owner workspace** ("Only select repositories"), never "All repositories": a per-org token reaches private repos, and the sync copies titles and links into the owner workspace without a per-repo check. Never issue one for `bookchaowalit-freelance` or any repo that holds client work (client data stays in its own workspace). Owners without an entry use `BACKLOG_SYNC_GITHUB_TOKEN`; an owner with neither stops the run with `missing_config` (exit 2). Source values: Infisical `/github` `BACKLOG_SYNC_GITHUB_TOKEN_<ORG>` (owner action) |
+| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | the shared GitHub App (owner decision 2026-11-28; App not created yet): numeric App id and its private key as PEM (PKCS#1 `BEGIN RSA PRIVATE KEY` or PKCS#8 `BEGIN PRIVATE KEY`; literal `\n` sequences are read as newlines). When both are set they **replace** `BACKLOG_SYNC_GITHUB_TOKEN(S)`; when neither is set the PATs work as before; one without the other stops the run with `missing_config` (exit 2). Per owner the sync looks up the installation (`/orgs/{owner}/installation`, then `/users/{owner}/installation`) and mints an installation token down-scoped to **`issues: read`, `contents: read`, `metadata: read`** (no repository list: the installation's own repository selection decides what is read). Tokens last an hour and are re-minted when under 5 minutes remain; each owner is its own group. `/search/issues`, `/search/code` and the contents API all accept installation tokens (GitHub docs, "Endpoints available for GitHub App installation access tokens"). Source values: Infisical `/github` (owner action) |
 | `BACKLOG_SYNC_GITHUB_OWNERS` | `bookchaowalit` plus the `bookchaowalit-*` orgs; never `Happy-Teeth`. A per-org token in `BACKLOG_SYNC_GITHUB_TOKENS` is limited to selected repositories (above); orgs that hold client work are read only through public repos with the default token, so the default `BACKLOG_SYNC_GITHUB_TOKEN` must have resource owner `bookchaowalit` (the personal account), never a client or `bookchaowalit-freelance` org |
 | `BACKLOG_SYNC_BOT_REPOS` | repos that run the autopilot (default `bookchaowalit-website/productivity-tracking-web`); add one when Wave 6 adds a repo |
 | `SENTRY_AUTH_TOKEN` | Infisical `/sentry` (reads issues; checked 2026-10-23) |
@@ -110,6 +111,18 @@ Result: dry run 11 `would_create` → write 11 `created` → re-run 11 `unchange
   (3) After 3 failed downloads of one file kind in one group that kind stops for the run; the code
   search returns the same order every hour, so files after 3 persistently broken ones are not read
   until those are fixed or removed (each failure is logged and the first reaches Sentry).
+- **2026-11-28: GitHub App support (branch `feat/github-app-token`).** With `GITHUB_APP_ID` and
+  `GITHUB_APP_PRIVATE_KEY` set, every owner in `BACKLOG_SYNC_GITHUB_OWNERS` gets its own
+  installation token (read-only issues, contents, metadata), which also reaches org-private
+  repos the App is installed on. Same boundary as the per-org PATs: the sync reads only the
+  owners listed, so keep `bookchaowalit-freelance` and client orgs out of
+  `BACKLOG_SYNC_GITHUB_OWNERS`, and on orgs whose private repos must not feed the owner workspace
+  install the App on "Only select repositories". An owner without an installation fails only its
+  own group (`backlog.error` with `status` 404, the next owners still sync). Switch-over: set both
+  App variables on the Railway service, run
+  `railway run --service backlog-sync -- empire-backlog-sync --dry-run --sources github,files`,
+  compare counts with the last PAT run, then delete `BACKLOG_SYNC_GITHUB_TOKEN(S)` from the service
+  and revoke the PATs.
 - Rollback: delete the Railway service `backlog-sync` (the tasks stay in tasks-api), or remove
   `tasks.task:write` by revoking the delegation (`platform.delegations.revoked_at`).
 
